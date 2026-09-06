@@ -17,7 +17,18 @@ export interface GraphNode {
   bytes?: number[];
   operandDetails?: CanonicalOperand[];
   memoryOperands?: CanonicalMemoryOperand[];
+  blockInstructions?: import('../binary/model').CanonicalInstruction[];
+  cfiSummary?: string;
+  reachable?: boolean;
+  mnemonic?: string;
+  operands?: string;
+  dataflowUses?: string[];
+  dataflowDefs?: string[];
+  dataflowValueKind?: string;
+  dataflowValueCount?: number;
+  dataflowLane?: string;
 }
+
 
 export interface GraphEdge {
   id: string;
@@ -36,4 +47,8 @@ export interface AnalysisGraph {
   sourceKind?: 'asm-source' | 'raw-elf-capstone';
   architecture?: string;
   entryAddress?: number;
+  viewKind?: 'source-flow' | 'function-cfg' | 'dataflow';
+  functionAddress?: number;
+  functionName?: string;
+  dataflowProjection?: 'flow' | 'registers' | 'memory' | 'calls' | 'raw';
 }

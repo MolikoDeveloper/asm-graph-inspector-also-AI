@@ -1,3 +1,5 @@
+import type { GlobalDependencyResolution } from '../dependencies/model';
+
 export type ElfKind = 'executable' | 'pie-executable' | 'shared-library' | 'relocatable' | 'core' | 'unknown';
 
 export interface ElfHeaderSummary {
@@ -69,6 +71,52 @@ export interface ElfRelocation {
 
 export type ElfUnwindSource = 'eh_frame' | 'debug_frame';
 
+
+export type ElfCfiRule =
+  | { kind: 'cfa-register-offset'; register: number | null; offset: number }
+  | { kind: 'offset'; offset: number }
+  | { kind: 'val-offset'; offset: number }
+  | { kind: 'same-value' }
+  | { kind: 'undefined' }
+  | { kind: 'register'; register: number }
+  | { kind: 'expression'; expression: number[] }
+  | { kind: 'val-expression'; expression: number[] }
+  | { kind: 'cfa-expression'; expression: number[] };
+
+export interface ElfCfiRegisterRule {
+  register: number;
+  rule: ElfCfiRule;
+}
+
+export interface ElfCfiRow {
+  startAddress: number;
+  endAddress: number;
+  cfa: ElfCfiRule | null;
+  registerRules: ElfCfiRegisterRule[];
+  returnAddressRegister: number | null;
+  returnAddressRule: ElfCfiRule | null;
+  argsSize: number | null;
+}
+
+export interface ElfUnwindCie {
+  id: string;
+  source: ElfUnwindSource;
+  address: number;
+  sectionIndex: number;
+  sectionName: string;
+  version: number;
+  augmentation: string;
+  addressSize: number;
+  codeAlignment: number;
+  dataAlignment: number;
+  returnRegister: number;
+  fdeEncoding: number;
+  lsdaEncoding: number;
+  instructions: number[];
+  initialCfi: ElfCfiRow | null;
+  parseComplete: boolean;
+}
+
 export interface ElfUnwindFde {
   id: string;
   source: ElfUnwindSource;
@@ -80,12 +128,18 @@ export interface ElfUnwindFde {
   sectionIndex: number;
   sectionName: string;
   parseComplete: boolean;
+  instructions: number[];
+  unwindRows: ElfCfiRow[];
+  cfiDiagnostics: string[];
 }
 
 export interface ElfUnwindModel {
   available: boolean;
+  cies: ElfUnwindCie[];
   fdes: ElfUnwindFde[];
   errors: string[];
+  cfiDiagnostics: string[];
+  cfiRowCount: number;
 }
 
 export interface LoadedImage {
@@ -211,4 +265,5 @@ export interface BinaryAnalysisSummary {
   instructions: CanonicalInstruction[];
   functions: BinaryFunctionCandidate[];
   pltStubs: ElfPltStub[];
+  dependencies: GlobalDependencyResolution[];
 }

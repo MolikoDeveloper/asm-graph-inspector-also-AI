@@ -1,14 +1,17 @@
 import { useState } from 'react';
-import { Cpu, Grid2X2, SlidersHorizontal, Type } from 'lucide-react';
+import { Cpu, FolderOpen, Grid2X2, SlidersHorizontal, Type } from 'lucide-react';
 import type { AppSettings } from '../app/settings';
+import type { GlobalDependencyController } from '../features/dependencies/useGlobalDependencies';
+import { GlobalDependenciesSettings } from './GlobalDependenciesSettings';
 import { Modal } from './ui';
 
-export function SettingsDialog({ settings, onChange, onClose }: { settings: AppSettings; onChange(next: AppSettings): void; onClose(): void }) {
-  const [tab, setTab] = useState<'general' | 'editor' | 'graph' | 'runtime'>('general');
+export function SettingsDialog({ settings, globalDependencies, onChange, onClose }: { settings: AppSettings; globalDependencies: GlobalDependencyController; onChange(next: AppSettings): void; onClose(): void }) {
+  const [tab, setTab] = useState<'general' | 'editor' | 'graph' | 'dependencies' | 'runtime'>('general');
   const tabs = [
     ['general', 'General', SlidersHorizontal],
     ['editor', 'Editor', Type],
     ['graph', 'Graph', Grid2X2],
+    ['dependencies', 'Global dependencies', FolderOpen],
     ['runtime', 'Runtime', Cpu]
   ] as const;
 
@@ -42,6 +45,7 @@ export function SettingsDialog({ settings, onChange, onClose }: { settings: AppS
               <label className="setting-row"><span><strong>Edge labels</strong><small>Show branch/call labels when available.</small></span><input type="checkbox" checked={settings.graphLabels} onChange={(event) => onChange({ ...settings, graphLabels: event.target.checked })} /></label>
             </>
           ) : null}
+          {tab === 'dependencies' ? <GlobalDependenciesSettings controller={globalDependencies} /> : null}
           {tab === 'runtime' ? (
             <>
               <h3>Runtime</h3>

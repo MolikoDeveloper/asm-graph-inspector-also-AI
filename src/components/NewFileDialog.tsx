@@ -1,9 +1,10 @@
-import { useState } from 'react';
+import { useEffect, useState } from 'react';
 import { FilePlus2 } from 'lucide-react';
 import { Modal } from './ui';
 
-export function NewFileDialog({ onCreate, onClose }: { onCreate(path: string): void; onClose(): void }) {
-  const [path, setPath] = useState('src/new.asm');
+export function NewFileDialog({ onCreate, onClose, initialPath = 'src/new.asm' }: { onCreate(path: string): void; onClose(): void; initialPath?: string }) {
+  const [path, setPath] = useState(initialPath);
+  useEffect(() => setPath(initialPath), [initialPath]);
   function submit() {
     if (!path.trim()) return;
     onCreate(path);

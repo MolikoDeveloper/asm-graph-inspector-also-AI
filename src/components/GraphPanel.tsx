@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
-import { Crosshair, GitBranch, Minus, Plus, RotateCcw } from 'lucide-react';
+import { Crosshair, GitBranch, Minus, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import type { AnalysisGraph, GraphNode } from '../features/analysis/model';
 import { layoutGraph } from '../features/analysis/layout';
 import { EmptyState, IconButton } from './ui';
@@ -20,7 +20,7 @@ function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, width:
   ctx.roundRect(x, y, width, height, radius);
 }
 
-export function GraphPanel({ graph, grid, labels, selectedId, onSelect }: { graph: AnalysisGraph | null; grid: boolean; labels: boolean; selectedId: string | null; onSelect(id: string | null): void }) {
+export function GraphPanel({ graph, title = 'Flow graph', grid, labels, selectedId, onSelect, onClear }: { graph: AnalysisGraph | null; title?: string; grid: boolean; labels: boolean; selectedId: string | null; onSelect(id: string | null): void; onClear?(): void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [viewport, setViewport] = useState<Viewport>({ x: 20, y: 10, zoom: 0.9 });
   const [drag, setDrag] = useState<{ x: number; y: number; originX: number; originY: number } | null>(null);
@@ -78,30 +78,49 @@ export function GraphPanel({ graph, grid, labels, selectedId, onSelect }: { grap
         const from = nodeById.get(edge.from);
         const to = nodeById.get(edge.to);
         if (!from || !to) continue;
-        const x1 = from.x + from.width / 2;
-        const y1 = from.y + from.height;
-        const x2 = to.x + to.width / 2;
-        const y2 = to.y;
-        ctx.strokeStyle = edge.kind === 'call' ? '#d06a72' : edge.kind === 'branch' ? '#7e6ad8' : '#3d79a8';
-        ctx.lineWidth = edge.kind === 'control' ? 1.4 : 1.8;
+        const horizontalDataEdge = edge.kind === 'data' && Math.abs((to.x + to.width / 2) - (from.x + from.width / 2)) > 100;
+        const x1 = horizontalDataEdge ? (to.x >= from.x ? from.x + from.width : from.x) : from.x + from.width / 2;
+        const y1 = horizontalDataEdge ? from.y + from.height / 2 : from.y + from.height;
+        const x2 = horizontalDataEdge ? (to.x >= from.x ? to.x : to.x + to.width) : to.x + to.width / 2;
+        const y2 = horizontalDataEdge ? to.y + to.height / 2 : to.y;
+        ctx.strokeStyle = edge.kind === 'call' ? '#d06a72' : edge.kind === 'branch' ? '#7e6ad8' : edge.kind === 'data' ? '#43a88a' : '#3d79a8';
+        ctx.lineWidth = edge.kind === 'control' ? 1.4 : edge.kind === 'data' ? 1.35 : 1.8;
         ctx.beginPath();
-        const midY = y1 + Math.max(18, (y2 - y1) * 0.5);
-        ctx.moveTo(x1, y1);
-        ctx.bezierCurveTo(x1, midY, x2, midY, x2, y2);
+        let labelX: number;
+        let labelY: number;
+        if (horizontalDataEdge) {
+          const midX = (x1 + x2) / 2;
+          ctx.moveTo(x1, y1);
+          ctx.bezierCurveTo(midX, y1, midX, y2, x2, y2);
+          labelX = midX + 7;
+          labelY = (y1 + y2) / 2 - 5;
+        } else {
+          const midY = y1 + Math.max(18, (y2 - y1) * 0.5);
+          ctx.moveTo(x1, y1);
+          ctx.bezierCurveTo(x1, midY, x2, midY, x2, y2);
+          labelX = (x1 + x2) / 2 + 7;
+          labelY = midY - 5;
+        }
         ctx.stroke();
         ctx.fillStyle = ctx.strokeStyle;
         ctx.beginPath();
-        ctx.moveTo(x2 - 5, y2 - 8); ctx.lineTo(x2 + 5, y2 - 8); ctx.lineTo(x2, y2); ctx.fill();
+        if (horizontalDataEdge) {
+          const direction = x2 >= x1 ? 1 : -1;
+          ctx.moveTo(x2 - direction * 8, y2 - 5); ctx.lineTo(x2 - direction * 8, y2 + 5); ctx.lineTo(x2, y2); ctx.fill();
+        } else {
+          ctx.moveTo(x2 - 5, y2 - 8); ctx.lineTo(x2 + 5, y2 - 8); ctx.lineTo(x2, y2); ctx.fill();
+        }
         if (labels && edge.label) {
           ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
           ctx.fillStyle = '#8193a6';
-          ctx.fillText(edge.label, (x1 + x2) / 2 + 7, midY - 5);
+          ctx.fillText(edge.label, labelX, labelY);
         }
       }
 
       for (const node of positioned) {
         const palette = NODE_COLORS[node.kind];
         const selected = node.id === selectedId;
+        ctx.globalAlpha = node.reachable === false ? 0.42 : 1;
         roundedRect(ctx, node.x, node.y, node.width, node.height, 6);
         ctx.fillStyle = palette.fill;
         ctx.fill();
@@ -121,6 +140,7 @@ export function GraphPanel({ graph, grid, labels, selectedId, onSelect }: { grap
         ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
         ctx.fillStyle = '#74869a';
         ctx.fillText(node.detail, node.x + 12, node.y + node.height - 10);
+        ctx.globalAlpha = 1;
       }
       ctx.restore();
     }
@@ -145,19 +165,20 @@ export function GraphPanel({ graph, grid, labels, selectedId, onSelect }: { grap
   }
 
   if (!graph) {
-    return <div className="graph-panel empty"><EmptyState icon={<GitBranch size={30} />} title="No graph yet" body="Open an ASM file and run Analysis. The graph remains Canvas-based and renders only the active analysis." /></div>;
+    return <div className="graph-panel empty"><EmptyState icon={<GitBranch size={30} />} title="No graph yet" body="Open an ASM or binary file. Analysis starts automatically and commits only valid results." /></div>;
   }
 
   return (
     <section className="graph-panel">
       <div className="graph-toolbar">
-        <span><GitBranch size={14} /> Flow graph</span>
+        <span><GitBranch size={14} /> {title}</span>
         <div>
-          <IconButton title="Zoom out" onClick={() => setViewport((value) => ({ ...value, zoom: Math.max(0.35, value.zoom - 0.1) }))}><Minus size={14} /></IconButton>
+          <IconButton title="Zoom out" onClick={() => setViewport((value) => ({ ...value, zoom: Math.max(0.22, value.zoom - 0.1) }))}><Minus size={14} /></IconButton>
           <span className="zoom-value">{Math.round(viewport.zoom * 100)}%</span>
-          <IconButton title="Zoom in" onClick={() => setViewport((value) => ({ ...value, zoom: Math.min(2.2, value.zoom + 0.1) }))}><Plus size={14} /></IconButton>
+          <IconButton title="Zoom in" onClick={() => setViewport((value) => ({ ...value, zoom: Math.min(2.8, value.zoom + 0.1) }))}><Plus size={14} /></IconButton>
           <IconButton title="Fit graph" onClick={() => setViewport({ x: 20, y: 10, zoom: 0.9 })}><Crosshair size={14} /></IconButton>
           <IconButton title="Reset selection" onClick={() => onSelect(null)}><RotateCcw size={14} /></IconButton>
+          {onClear ? <IconButton title="Clear active graph" aria-label="Clear active graph" onClick={onClear}><Trash2 size={14} /></IconButton> : null}
         </div>
       </div>
       <div className="graph-canvas-wrap">
@@ -165,8 +186,22 @@ export function GraphPanel({ graph, grid, labels, selectedId, onSelect }: { grap
           ref={canvasRef}
           onWheel={(event) => {
             event.preventDefault();
-            const direction = event.deltaY < 0 ? 0.08 : -0.08;
-            setViewport((value) => ({ ...value, zoom: Math.min(2.2, Math.max(0.35, value.zoom + direction)) }));
+            const canvas = canvasRef.current;
+            if (!canvas) return;
+            const rect = canvas.getBoundingClientRect();
+            const screenX = event.clientX - rect.left;
+            const screenY = event.clientY - rect.top;
+            const factor = Math.exp(-event.deltaY * 0.0015);
+            setViewport((value) => {
+              const nextZoom = Math.min(2.8, Math.max(0.22, value.zoom * factor));
+              const graphX = (screenX - value.x) / value.zoom;
+              const graphY = (screenY - value.y) / value.zoom;
+              return {
+                zoom: nextZoom,
+                x: screenX - graphX * nextZoom,
+                y: screenY - graphY * nextZoom
+              };
+            });
           }}
           onMouseDown={(event) => {
             const node = pickNode(event.clientX, event.clientY);

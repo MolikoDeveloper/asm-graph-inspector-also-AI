@@ -1,3 +1,10 @@
+export interface EditorRevealTarget {
+  fileId: string;
+  line?: number;
+  address?: number;
+  nonce: number;
+}
+
 export interface EditorGroupState {
   id: string;
   tabs: string[];
@@ -11,7 +18,9 @@ export interface WorkspaceState {
   graphVisible: boolean;
   bottomPanelVisible: boolean;
   bottomPanelHeight: number;
-  activeActivity: 'explorer' | 'search' | 'analysis';
+  sidebarWidth: number;
+  analysisWidth: number;
+  activeActivity: 'explorer' | 'search';
 }
 
 export const initialWorkspaceState: WorkspaceState = {
@@ -21,5 +30,7 @@ export const initialWorkspaceState: WorkspaceState = {
   graphVisible: true,
   bottomPanelVisible: true,
   bottomPanelHeight: 190,
+  sidebarWidth: 232,
+  analysisWidth: 620,
   activeActivity: 'explorer'
 };

@@ -22,9 +22,12 @@
 - [x] Port raw-byte GOT/PLT/IFUNC reconstruction for `.plt`, `.plt.sec`, `.plt.got`, JUMP_SLOT/GLOB_DAT and IRELATIVE using Capstone + relocation proof.
 - [ ] Add cross-artifact build-id reconciliation between textual dumps and imported raw ELF evidence.
 - [x] Port FDE range parsing and FDE-priority stripped-function discovery with recursive direct calls, conservative tail calls, CET/prologue/alignment fallbacks and symbol-backed suppression.
-- [ ] Port full CFI row interpretation and LSDA/personality semantics; current modular unwind parser uses FDE boundaries only.
-- [ ] Port the remaining V14.15 CFG semantics into worker-friendly pure TypeScript; canonical function candidates and instruction control-flow targets are now modular.
-- [ ] Port Dataflow/SSA engine and the Flow/Registers/Memory/Calls/Raw-SSA projections.
+- [x] Port the first CFI row interpreter for common DW_CFA state transitions and expose CFA/return-address state per selected CFG block.
+- [ ] Complete DWARF expression evaluation, LSDA/personality/action tables and exception edges; expression rules are retained but not evaluated yet.
+- [x] Port function-scoped basic-block CFG construction with local branch/fallthrough reachability, back-edge detection and relocation-proven external call references.
+- [ ] Port the remaining advanced V14.15 CFG semantics: dominators/frontiers, natural loops, irreducible SCCs, critical edges, jump tables, exception edges, noreturn proof and unresolved-transfer diagnostics.
+- [x] Port the first modular Dataflow/SSA slice: register SSA values, join phi nodes, constants/copies/arithmetic, ABI call/syscall effects and Flow/Registers/Memory/Calls/Raw-SSA projections for source ASM and canonical binary instructions.
+- [ ] Complete V14.15 Dataflow parity: range-normalized memory cells, alias sets, stack-frame normalization, flags/predicates, SIMD/x87 barriers, richer unknown provenance and large-function fixed-point budgets.
 - [ ] Port execution policy/session/provider contracts.
 - [ ] Add project bundle import/export and analysis-cache persistence.
 - [ ] Move heavy ELF/Capstone/dataflow work to Web Workers.
@@ -33,7 +36,24 @@
 ## UX follow-up
 
 - [ ] Add command palette and keyboard-driven file switching.
-- [ ] Add resizable dock splitters.
+- [x] Add resizable Explorer / editor-analysis / inspector / bottom-panel splitters.
+- [x] Add project file context menus, drag-to-folder/root moves, rename/move/duplicate/delete actions, and folder rename/delete actions.
+- [x] Add complete lazy binary disassembly view over executable ELF sections with virtualized rendering; keep Hex as a secondary view.
+- [x] Add mouse-anchored Canvas zoom and graph/inspector → editor/disassembly navigation.
+- [x] Add NASM-oriented syntax highlighting without replacing the textarea editing surface.
+- [x] Add debounced automatic source analysis with transactional commit: invalid ASM reports Problems while the last valid graph/inspector remain visible.
 - [ ] Persist editor-group/workbench layout per project as non-authoritative UI state.
-- [ ] Add contextual graph tabs (CFG, Dataflow, Binary Map, Sections, Symbols, Relocs) without duplicating the editor surface.
-- [ ] Add virtualized file/symbol lists for large binaries.
+- [x] Add contextual analysis tabs for CFG, Binary Map, Sections, Symbols, Relocs and Unwind without duplicating the editor surface.
+- [x] Add Dataflow with Flow/Registers/Memory/Calls/Raw-SSA projections to the contextual analysis dock.
+- [ ] Add dataflow focus/search, one-hop provenance expansion and projection-specific inspector actions from V14.15.
+- [ ] Add virtualized file/symbol/function lists for large binaries.
+
+## Global dependency follow-up
+
+- [x] Add browser-global dependency settings shared by every project.
+- [x] Persist imported global ELF files independently of project storage.
+- [x] Persist authorized library directory handles where the browser supports File System Access API handles in IndexedDB.
+- [x] Resolve `DT_NEEDED` by exact SONAME / filename and report permission-required separately from unresolved.
+- [ ] Recursively load resolved dependency images into separate address spaces and expose cross-library symbol/call edges.
+- [ ] Add project-local dependency overrides with precedence above global dependencies.
+- [ ] Add dependency indexing/virtualization for very large library roots instead of exact-name lookup only.

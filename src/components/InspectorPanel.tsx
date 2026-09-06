@@ -1,4 +1,4 @@
-import { Binary, Braces, GitFork, MemoryStick } from 'lucide-react';
+import { Binary, Braces, GitBranch, GitFork, MemoryStick } from 'lucide-react';
 import type { AnalysisGraph } from '../features/analysis/model';
 import type { CanonicalOperand } from '../features/binary/model';
 
@@ -19,13 +19,14 @@ function formatOperand(operand: CanonicalOperand): string {
   return `#${operand.index} other · ${operand.size} B · ${access}`;
 }
 
-export function InspectorPanel({ graph, selectedId }: { graph: AnalysisGraph | null; selectedId: string | null }) {
+export function InspectorPanel({ graph, selectedId, stale = false, onNavigate }: { graph: AnalysisGraph | null; selectedId: string | null; stale?: boolean; onNavigate?(target: { line?: number; address?: number }): void }) {
   const node = selectedId && graph ? graph.nodes.find((candidate) => candidate.id === selectedId) ?? null : null;
   return (
     <aside className="inspector-panel">
-      <div className="inspector-tabs"><button className="active">Properties</button><button>Analysis</button></div>
+      <div className="inspector-tabs"><button className="active">Properties</button></div>
       {node ? (
         <div className="inspector-content">
+          {stale ? <div className="inspector-stale-notice">Current ASM has problems. Showing the last valid analysis snapshot.</div> : null}
           <span className="inspector-eyebrow">{node.kind}</span>
           <h3>{node.title}</h3>
           <dl className="property-list">
@@ -43,6 +44,27 @@ export function InspectorPanel({ graph, selectedId }: { graph: AnalysisGraph | n
             <section className="inspector-section">
               <h4><MemoryStick size={14} /> Canonical operands</h4>
               <p className="operand-lines">{node.operandDetails.map((operand) => formatOperand(operand)).join('\n')}</p>
+            </section>
+          ) : null}
+          {node.blockInstructions?.length ? (
+            <section className="inspector-section">
+              <h4><GitBranch size={14} /> Basic block</h4>
+              <div className="inspector-instruction-list">{node.blockInstructions.map((instruction) => <button key={instruction.address} onClick={() => onNavigate?.({ address: instruction.address })}><code>0x{instruction.address.toString(16)}</code><span>{instruction.mnemonic}{instruction.operands ? ` ${instruction.operands}` : ''}</span></button>)}</div>
+            </section>
+          ) : null}
+          {node.dataflowUses?.length || node.dataflowDefs?.length || node.dataflowValueKind ? (
+            <section className="inspector-section">
+              <h4><GitFork size={14} /> Dataflow</h4>
+              {node.dataflowValueKind ? <p>value: {node.dataflowValueKind}{node.dataflowValueCount !== undefined ? ` · ${node.dataflowValueCount} use${node.dataflowValueCount === 1 ? '' : 's'}` : ''}</p> : null}
+              {node.dataflowUses?.length ? <p>uses: {node.dataflowUses.join(', ')}</p> : null}
+              {node.dataflowDefs?.length ? <p>defines: {node.dataflowDefs.join(', ')}</p> : null}
+              {node.dataflowLane ? <p>lane: {node.dataflowLane}</p> : null}
+            </section>
+          ) : null}
+          {node.cfiSummary ? (
+            <section className="inspector-section">
+              <h4><MemoryStick size={14} /> CFI at block entry</h4>
+              <p>{node.cfiSummary}</p>
             </section>
           ) : null}
         </div>

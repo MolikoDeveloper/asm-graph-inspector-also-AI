@@ -36,6 +36,10 @@ export interface ProjectController {
   updateFileText(fileId: string, text: string): void;
   removeFile(fileId: string): void;
   renameFile(fileId: string, path: string): void;
+  moveFile(fileId: string, destinationDirectory: string): void;
+  duplicateFile(fileId: string, path: string): ProjectFile | null;
+  renameFolder(folderPath: string, nextFolderPath: string): void;
+  removeFolder(folderPath: string): string[];
   saveNow(): Promise<void>;
   refreshProjects(): Promise<void>;
 }
@@ -200,9 +204,74 @@ export function useProjectController(): ProjectController {
         ...file,
         path: clean,
         name: clean.split('/').pop() || clean,
+        language: file.kind === 'text' ? (clean.endsWith('.asm') || clean.endsWith('.s') ? 'asm' : 'text') : file.language,
         updatedAt: Date.now()
       } : file)
     }));
+  }, [mutate]);
+
+
+  const moveFile = useCallback((fileId: string, destinationDirectory: string) => {
+    const currentProject = projectRef.current;
+    const file = currentProject?.files.find((candidate) => candidate.id === fileId);
+    if (!file) return;
+    const directory = destinationDirectory.trim().replace(/^\/+|\/+$/g, '');
+    const path = directory ? `${directory}/${file.name}` : file.name;
+    if (currentProject?.files.some((candidate) => candidate.id !== fileId && candidate.path === path)) return;
+    renameFile(fileId, path);
+  }, [renameFile]);
+
+  const duplicateFile = useCallback((fileId: string, path: string): ProjectFile | null => {
+    const currentProject = projectRef.current;
+    const source = currentProject?.files.find((candidate) => candidate.id === fileId);
+    const clean = path.trim().replace(/^\/+/, '');
+    if (!source || !clean || currentProject?.files.some((candidate) => candidate.path === clean)) return null;
+    const copy: ProjectFile = {
+      ...source,
+      id: makeId('file'),
+      path: clean,
+      name: clean.split('/').pop() || clean,
+      bytes: source.bytes ? source.bytes.slice(0) : undefined,
+      updatedAt: Date.now()
+    };
+    addFiles([copy]);
+    return copy;
+  }, [addFiles]);
+
+  const renameFolder = useCallback((folderPath: string, nextFolderPath: string) => {
+    const from = folderPath.trim().replace(/^\/+|\/+$/g, '');
+    const to = nextFolderPath.trim().replace(/^\/+|\/+$/g, '');
+    if (!from || !to || from === to) return;
+    mutate((current) => {
+      const affected = current.files.filter((file) => file.path === from || file.path.startsWith(`${from}/`));
+      if (!affected.length) return current;
+      const affectedIds = new Set(affected.map((file) => file.id));
+      const occupied = new Set(current.files.filter((file) => !affectedIds.has(file.id)).map((file) => file.path));
+      const replacements = new Map<string, string>();
+      for (const file of affected) {
+        const suffix = file.path.slice(from.length).replace(/^\//, '');
+        const path = suffix ? `${to}/${suffix}` : to;
+        if (occupied.has(path) || [...replacements.values()].includes(path)) return current;
+        replacements.set(file.id, path);
+      }
+      return {
+        ...current,
+        files: current.files.map((file) => {
+          const path = replacements.get(file.id);
+          return path ? { ...file, path, name: path.split('/').pop() || path, updatedAt: Date.now() } : file;
+        })
+      };
+    });
+  }, [mutate]);
+
+  const removeFolder = useCallback((folderPath: string): string[] => {
+    const clean = folderPath.trim().replace(/^\/+|\/+$/g, '');
+    if (!clean) return [];
+    const ids = projectRef.current?.files.filter((file) => file.path.startsWith(`${clean}/`)).map((file) => file.id) ?? [];
+    if (!ids.length) return [];
+    const removed = new Set(ids);
+    mutate((current) => ({ ...current, files: current.files.filter((file) => !removed.has(file.id)) }));
+    return ids;
   }, [mutate]);
 
   const saveNow = useCallback(async () => {
@@ -232,7 +301,11 @@ export function useProjectController(): ProjectController {
     updateFileText,
     removeFile,
     renameFile,
+    moveFile,
+    duplicateFile,
+    renameFolder,
+    removeFolder,
     saveNow,
     refreshProjects
-  }), [project, summaries, loading, saveState, createProject, openProject, closeProject, deleteProject, addFiles, createTextFile, updateFileText, removeFile, renameFile, saveNow, refreshProjects]);
+  }), [project, summaries, loading, saveState, createProject, openProject, closeProject, deleteProject, addFiles, createTextFile, updateFileText, removeFile, renameFile, moveFile, duplicateFile, renameFolder, removeFolder, saveNow, refreshProjects]);
 }
