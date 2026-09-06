@@ -47,7 +47,7 @@ export interface AnalysisGraph {
   sourceKind?: 'asm-source' | 'raw-elf-capstone';
   architecture?: string;
   entryAddress?: number;
-  viewKind?: 'source-flow' | 'function-cfg' | 'dataflow';
+  viewKind?: 'source-flow' | 'function-cfg' | 'program-flow' | 'dataflow';
   functionAddress?: number;
   functionName?: string;
   dataflowProjection?: 'flow' | 'registers' | 'memory' | 'calls' | 'raw';

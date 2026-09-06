@@ -82,10 +82,6 @@ function buildTree(functions: BinaryFunctionCandidate[]): FunctionTreeNode {
   return finalizeNode(root);
 }
 
-function firstLevelPaths(tree: FunctionTreeNode): Set<string> {
-  return new Set(tree.children.map((child) => child.path));
-}
-
 function collectGroupPaths(tree: FunctionTreeNode, output = new Set<string>()): Set<string> {
   for (const child of tree.children) {
     output.add(child.path);
@@ -167,13 +163,18 @@ export function FunctionTree({ functions, activeAddress, onSelect }: {
     [functions, normalizedQuery]
   );
   const tree = useMemo(() => buildTree(filteredFunctions), [filteredFunctions]);
-  const defaultExpanded = useMemo(() => firstLevelPaths(buildTree(functions)), [functions]);
   const searchExpanded = useMemo(() => collectGroupPaths(tree), [tree]);
-  const [expanded, setExpanded] = useState<Set<string>>(defaultExpanded);
+  const functionUniverseKey = useMemo(
+    () => functions.map((fn) => `${fn.address.toString(16)}:${fn.name}`).join('|'),
+    [functions]
+  );
+  const [expanded, setExpanded] = useState<Set<string>>(() => new Set());
 
   useEffect(() => {
-    setExpanded(defaultExpanded);
-  }, [defaultExpanded]);
+    // A different binary/function universe starts compact. Selecting another function
+    // in the same binary keeps the user's expansion state intact.
+    setExpanded(new Set());
+  }, [functionUniverseKey]);
 
   const visibleExpanded = normalizedQuery ? searchExpanded : expanded;
   const toggle = (path: string) => {

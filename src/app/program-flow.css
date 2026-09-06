@@ -1,0 +1,32 @@
+/* Interprocedural program-flow navigation. Kept separate from the legacy stylesheet
+   so the feature can evolve without making styles.css even more monolithic. */
+.cfg-view-shell { min-width: 0; min-height: 0; display: grid; grid-template-rows: auto minmax(0,1fr); overflow: hidden; }
+.cfg-view-shell.function-only { grid-template-rows: minmax(0,1fr); }
+.cfg-view-shell > .analysis-dock { min-height: 0; }
+.cfg-mode-picker { min-width: 0; display: flex; align-items: center; gap: 6px; padding: 0 7px; border-left: 1px solid #1d2934; color: #7890a4; font-size: 10px; }
+.cfg-mode-picker span { white-space: nowrap; }
+.cfg-mode-picker select { min-width: 112px; max-width: 150px; height: 24px; border: 1px solid #2c3d4d; border-radius: 4px; background: #0a1016; color: #c6d4df; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.program-flow-toolbar { min-width: 0; border-bottom: 1px solid #1b2731; background: #0c1319; }
+.program-flow-toolbar-main { min-width: 0; min-height: 31px; display: flex; align-items: center; gap: 6px; padding: 3px 6px; }
+.program-flow-toolbar-main label { min-width: 0; display: flex; align-items: center; gap: 5px; color: #72889b; font-size: 9px; }
+.program-flow-toolbar-main select { height: 23px; border: 1px solid #293b4a; border-radius: 4px; background: #081016; color: #c0ced9; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.program-flow-toolbar-main button { height: 23px; display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border: 1px solid #263746; border-radius: 4px; background: #0d171f; color: #8298aa; font-size: 8px; cursor: pointer; }
+.program-flow-toolbar-main button:hover { border-color: #376485; color: #d7e4ed; background: #12202a; }
+.program-flow-visited { color: #5f7487; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+.program-flow-groups { min-width: 0; display: flex; gap: 4px; padding: 0 6px 5px; overflow-x: auto; scrollbar-width: thin; }
+.program-flow-groups button { flex: 0 0 auto; height: 22px; display: inline-flex; align-items: center; gap: 5px; padding: 0 7px; border: 1px solid #2a3b49; border-radius: 11px; background: #101a22; color: #91a5b6; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; cursor: pointer; }
+.program-flow-groups button:hover { border-color: #3f7599; color: #dce8f1; }
+.program-flow-groups button.hidden { opacity: .45; text-decoration: line-through; }
+.program-flow-groups button.expanded { border-color: #2c83bd; background: #10283a; color: #cdeaff; }
+.program-flow-groups small { color: #60768a; font-size: 7px; }
+
+@media (max-width: 1240px) {
+  .cfg-mode-picker span { display: none; }
+  .cfg-mode-picker select { max-width: 120px; }
+  .program-flow-toolbar-main label span { display: none; }
+}
+
+@media (max-width: 900px) {
+  .program-flow-toolbar-main { overflow-x: auto; }
+  .program-flow-groups { max-width: 100%; }
+}

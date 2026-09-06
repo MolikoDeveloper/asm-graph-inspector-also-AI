@@ -33,6 +33,79 @@ function layoutFunctionCfg(graph: AnalysisGraph): PositionedGraphNode[] {
 }
 
 
+
+function layoutProgramFlow(graph: AnalysisGraph): PositionedGraphNode[] {
+  const nodes = graph.nodes;
+  if (!nodes.length) return [];
+
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const outgoing = new Map<string, string[]>();
+  const incomingCount = new Map<string, number>(nodes.map((node) => [node.id, 0] as const));
+  for (const edge of graph.edges) {
+    if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to) || edge.from === edge.to) continue;
+    const list = outgoing.get(edge.from) ?? [];
+    list.push(edge.to);
+    outgoing.set(edge.from, list);
+    incomingCount.set(edge.to, (incomingCount.get(edge.to) ?? 0) + 1);
+  }
+
+  const active = nodes.find((node) => graph.functionAddress !== undefined && node.address === graph.functionAddress);
+  const roots = nodes.filter((node) => (incomingCount.get(node.id) ?? 0) === 0);
+  if (!roots.length && active) roots.push(active);
+  if (!roots.length) roots.push(nodes[0]);
+
+  const layer = new Map<string, number>();
+  const queue = roots.map((node) => node.id);
+  for (const id of queue) layer.set(id, 0);
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const from = queue[cursor];
+    const nextLayer = (layer.get(from) ?? 0) + 1;
+    for (const to of outgoing.get(from) ?? []) {
+      if (layer.has(to)) continue;
+      layer.set(to, nextLayer);
+      queue.push(to);
+    }
+  }
+
+  const maxKnownLayer = Math.max(0, ...layer.values());
+  for (const node of nodes) if (!layer.has(node.id)) layer.set(node.id, maxKnownLayer + 1);
+
+  const byLayer = new Map<number, GraphNode[]>();
+  for (const node of nodes) {
+    const depth = layer.get(node.id) ?? 0;
+    const list = byLayer.get(depth) ?? [];
+    list.push(node);
+    byLayer.set(depth, list);
+  }
+
+  const result: PositionedGraphNode[] = [];
+  let yBase = 42;
+  for (const depth of [...byLayer.keys()].sort((a, b) => a - b)) {
+    const list = byLayer.get(depth)!;
+    list.sort((a, b) => {
+      const activeDelta = Number(b.address === graph.functionAddress) - Number(a.address === graph.functionAddress);
+      return activeDelta || a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' });
+    });
+    const columns = Math.min(4, Math.max(1, list.length));
+    const rows = Math.ceil(list.length / columns);
+    for (let index = 0; index < list.length; index += 1) {
+      const node = list[index];
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      const isGroup = node.kind === 'label';
+      result.push({
+        ...node,
+        x: 56 + column * 282,
+        y: yBase + row * 78,
+        width: isGroup ? 220 : 252,
+        height: isGroup ? 50 : 56
+      });
+    }
+    yBase += Math.max(1, rows) * 78 + 58;
+  }
+  return result;
+}
+
 function layoutDataflow(graph: AnalysisGraph): PositionedGraphNode[] {
   return graph.nodes.map((node, index) => {
     const lane = Boolean(node.dataflowLane);
@@ -51,6 +124,7 @@ function layoutDataflow(graph: AnalysisGraph): PositionedGraphNode[] {
 
 export function layoutGraph(graph: AnalysisGraph): PositionedGraphNode[] {
   if (graph.viewKind === 'function-cfg') return layoutFunctionCfg(graph);
+  if (graph.viewKind === 'program-flow') return layoutProgramFlow(graph);
   if (graph.viewKind === 'dataflow') return layoutDataflow(graph);
   const result: PositionedGraphNode[] = [];
   const rowHeight = 78;
