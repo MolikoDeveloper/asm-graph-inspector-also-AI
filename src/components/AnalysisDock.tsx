@@ -4,6 +4,7 @@ import type { AnalysisGraph, GraphNode } from '../features/analysis/model';
 import { analyzeDataflow, projectDataflow, type DataflowProjection } from '../features/analysis/dataflow';
 import type { BinaryAnalysisSummary } from '../features/binary/model';
 import { BinaryModelView, type BinaryModelViewKind } from './BinaryModelView';
+import { FunctionTree } from './FunctionTree';
 import { GraphPanel } from './GraphPanel';
 import { InspectorPanel } from './InspectorPanel';
 import { ResizeHandle } from './ResizeHandle';
@@ -148,13 +149,7 @@ export function AnalysisDock({
             {disassemblyView === 'functions' ? (
               <div className="disassembly-function-browser">
                 <div className="binary-view-heading"><GitBranch size={15} /><div><strong>Functions</strong><span>{functions.length} discovered functions · selecting one updates CFG and the disassembly viewer</span></div></div>
-                <div className="disassembly-function-list">
-                  {functions.map((fn) => (
-                    <button key={`${fn.address}:${fn.name}`} className={fn.address === binarySummary.rootAddress ? 'active' : ''} onClick={() => selectFunction(fn.address)}>
-                      <span>{fn.name}</span><code>0x{fn.address.toString(16)}</code><small>{fn.kind} · {fn.confidence}{fn.size !== null ? ` · ${fn.size} B` : ''}</small>
-                    </button>
-                  ))}
-                </div>
+                <FunctionTree functions={functions} activeAddress={binarySummary.rootAddress} onSelect={selectFunction} />
               </div>
             ) : <BinaryModelView summary={binarySummary} view={disassemblyView} onNavigate={navigateAddress} />}
           </div>

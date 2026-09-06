@@ -468,14 +468,7 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .disassembly-browser-tabs button:hover { color: #d0dde7; background: #121c25; }
 .disassembly-browser-tabs button.active { color: #e4eff7; border-bottom-color: #42a6e9; background: #0a0f14; }
 .disassembly-browser-content { min-width: 0; min-height: 0; overflow: hidden; }
-.disassembly-function-browser { min-width: 0; min-height: 0; height: 100%; display: grid; grid-template-rows: auto minmax(0,1fr); }
-.disassembly-function-list { min-height: 0; overflow: auto; display: grid; align-content: start; grid-template-columns: repeat(auto-fill, minmax(230px, 1fr)); gap: 1px; background: #17222c; }
-.disassembly-function-list button { min-width: 0; min-height: 48px; display: grid; grid-template-columns: minmax(0,1fr) auto; gap: 2px 8px; padding: 7px 9px; border: 0; background: #0c1218; color: #a9bac8; text-align: left; cursor: pointer; }
-.disassembly-function-list button:hover { background: #12212c; }
-.disassembly-function-list button.active { background: #143650; box-shadow: inset 2px 0 #47a8e8; color: #eef7fd; }
-.disassembly-function-list span { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
-.disassembly-function-list code { color: #c79350; font-size: 9px; }
-.disassembly-function-list small { grid-column: 1 / -1; color: #64798b; font-size: 8px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+.disassembly-function-browser { min-width: 0; min-height: 0; height: 100%; display: grid; grid-template-rows: auto minmax(0,1fr); overflow: hidden; }
 .binary-navigate-row { width: 100%; color: inherit; font: inherit; text-align: left; cursor: pointer; }
 button.binary-map-row { appearance: none; }
 button.binary-map-row:hover { border-color: #326083; background: #101c26; }
@@ -530,3 +523,30 @@ button.unwind-row:hover { background: #101d26; }
   .function-picker svg, .dataflow-picker svg { display: none; }
   .status-left, .status-right { gap: 7px; }
 }
+
+/* Function browser: dotted namespaces are rendered as an expandable tree. */
+.function-tree-shell { min-width: 0; min-height: 0; display: grid; grid-template-rows: 34px minmax(0,1fr); overflow: hidden; background: #0a0f14; }
+.function-tree-toolbar { min-width: 0; display: flex; align-items: center; gap: 8px; padding: 4px 8px; border-bottom: 1px solid #18232d; background: #0c1319; }
+.function-tree-toolbar > span { flex: 0 0 auto; color: #5f7486; font-size: 8px; font-variant-numeric: tabular-nums; }
+.function-tree-search { min-width: 120px; flex: 1 1 auto; height: 25px; display: flex; align-items: center; gap: 6px; padding: 0 7px; border: 1px solid #263746; border-radius: 4px; background: #081016; color: #678197; }
+.function-tree-search:focus-within { border-color: #338dcc; box-shadow: 0 0 0 1px rgba(51,141,204,.16); }
+.function-tree-search input { min-width: 0; width: 100%; border: 0; outline: 0; background: transparent; color: #c3d1dc; font: 9px ui-sans-serif, system-ui, sans-serif; }
+.function-tree-search input::placeholder { color: #526879; }
+.function-tree-search button { flex: 0 0 auto; width: 19px; height: 19px; display: grid; place-items: center; padding: 0; border: 0; background: transparent; color: #71879a; cursor: pointer; }
+.function-tree-search button:hover { color: #d4e0e9; }
+.function-tree { min-width: 0; min-height: 0; overflow: auto; padding: 2px 0 10px; scrollbar-gutter: stable; }
+.function-tree-group { min-width: 0; }
+.function-tree-group-row { width: 100%; height: 25px; display: grid; grid-template-columns: 14px minmax(0,1fr) auto; align-items: center; gap: 4px; padding-right: 9px; border: 0; border-bottom: 1px solid rgba(25,37,47,.35); background: transparent; color: #8fa4b5; text-align: left; cursor: pointer; }
+.function-tree-group-row:hover { background: #101a22; color: #d2dee7; }
+.function-tree-group-row strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 600 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.function-tree-group-row span { min-width: 18px; padding: 1px 4px; border-radius: 8px; background: #111e28; color: #60788b; font-size: 7px; text-align: center; font-variant-numeric: tabular-nums; }
+.function-tree-children { min-width: 0; }
+.function-tree-function { width: 100%; min-height: 31px; display: grid; grid-template-columns: 12px minmax(0,1fr) auto; align-items: center; gap: 6px; padding-top: 4px; padding-right: 9px; padding-bottom: 4px; border: 0; border-bottom: 1px solid rgba(25,37,47,.35); background: transparent; color: #9fb1bf; text-align: left; cursor: pointer; }
+.function-tree-function:hover { background: #101a22; }
+.function-tree-function.active { background: #12324a; box-shadow: inset 2px 0 #43a6e8; color: #edf7fd; }
+.function-tree-leaf-mark { align-self: start; padding-top: 1px; color: #4b91bd; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.function-tree-function-main { min-width: 0; display: grid; gap: 2px; }
+.function-tree-function-main strong { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.function-tree-function-main small { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #5f7485; font-size: 7px; }
+.function-tree-function code { align-self: start; color: #c58e48; font-size: 8px; }
+.function-tree-empty { padding: 18px 12px; color: #607689; font-size: 9px; text-align: center; }
