@@ -261,6 +261,33 @@ function canonicalize(module: CapstoneModule, handle: CapstoneHandle, instructio
   };
 }
 
+export interface X86_64InstructionDecoder {
+  decodeOne(bytes: Uint8Array, address: number): CanonicalInstruction | null;
+  close(): void;
+}
+
+export function createX86_64InstructionDecoder(module: CapstoneModule): X86_64InstructionDecoder {
+  const handle = new module.Capstone(module.ARCH_X86, module.MODE_64);
+  let closed = false;
+  handle.option(module.OPT_DETAIL, module.OPT_ON);
+  return {
+    decodeOne(bytes, address) {
+      if (closed) throw new Error('Capstone execution decoder is closed.');
+      let result: CanonicalInstruction | null = null;
+      handle.disasm_iter(bytes, address, (instruction, pointer) => {
+        result = canonicalize(module, handle, instruction, pointer);
+        return false;
+      });
+      return result;
+    },
+    close() {
+      if (closed) return;
+      closed = true;
+      handle.close();
+    }
+  };
+}
+
 export function decodeX86_64(
   module: CapstoneModule,
   bytes: Uint8Array,

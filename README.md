@@ -51,6 +51,13 @@ The app does not have a loose-file state. When there is no active project, the f
 
 Text edits autosave after a short debounce. Imported binaries are stored as `ArrayBuffer` values through IndexedDB structured cloning.
 
+
+## Binary execution checkpoint
+
+The Debug Console can now execute a deliberately bounded subset of **real static ELF64 x86-64 binaries** in the browser. Select an analyzed binary and use **Run → Run Active Binary (F6)** or **Step Instruction (F10)**. The provider maps ELF segments, maintains x86-64 registers/stack, decodes the live RIP with Capstone, and captures virtual stdout/stderr.
+
+This is emulation, not native ELF execution. The current provider refuses PIE/dynamically linked binaries and traps on unsupported instructions/syscalls instead of fabricating behavior. Dynamic linking, broader instruction coverage and VFS/syscalls are subsequent migration slices.
+
 ## Current migration boundary
 
 This package establishes the new product shell and module boundaries. The old monolithic analysis implementation should be migrated feature-by-feature behind `src/features/analysis/` and `src/features/capstone/` instead of copying the old global state into React.

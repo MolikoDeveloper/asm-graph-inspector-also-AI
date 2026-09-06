@@ -28,9 +28,10 @@
 - [ ] Port the remaining advanced V14.15 CFG semantics: dominators/frontiers, natural loops, irreducible SCCs, critical edges, jump tables, exception edges, noreturn proof and unresolved-transfer diagnostics.
 - [x] Port the first modular Dataflow/SSA slice: register SSA values, join phi nodes, constants/copies/arithmetic, ABI call/syscall effects and Flow/Registers/Memory/Calls/Raw-SSA projections for source ASM and canonical binary instructions.
 - [ ] Complete V14.15 Dataflow parity: range-normalized memory cells, alias sets, stack-frame normalization, flags/predicates, SIMD/x87 barriers, richer unknown provenance and large-function fixed-point budgets.
-- [ ] Port execution policy/session/provider contracts.
+- [x] Port the first execution policy/session/provider slice: fixed-address static ELF64 x86-64, PT_LOAD virtual memory, process stack/register state, Capstone-driven stepping, bounded run loop and virtual stdin/stdout/stderr + `read`/`write`/`exit` syscalls.
 - [ ] Add project bundle import/export and analysis-cache persistence.
 - [ ] Move heavy ELF/Capstone/dataflow work to Web Workers.
+- [ ] Extend execution beyond the bounded first provider: PIE load bias/relocations, dynamic loader + recursive shared-library address spaces, broader x86-64 instruction semantics, signals/threads and a real VFS/syscall surface.
 - [ ] Restore full `ray_test` regression under the modular engine.
 
 ## UX follow-up

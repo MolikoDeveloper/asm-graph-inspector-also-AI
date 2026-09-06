@@ -80,11 +80,35 @@ public/vendor/capstone/capstone_x86.wasm
 3. Complete V14.15 dataflow parity: normalized memory ranges/alias sets, stack/flags/barriers and provenance focus.
 4. Add cross-artifact build-id reconciliation for textual dumps + raw ELF evidence.
 5. Move project bundle import/export into `features/project/`.
-6. Add execution policy/session/provider + VFS/IO contracts.
+6. Extend the execution provider with PIE/dynamic linking, richer x86-64 semantics and VFS/syscall contracts.
 7. Add Web Workers for ELF/Capstone/dataflow operations before moving large fixtures.
 8. Persist analysis cache separately from authoritative project files.
 
 The React tree should never become the analysis engine.
+
+## Execution layer
+
+`features/execution/` owns runtime state and is deliberately separate from static analysis. The first provider consumes the same authoritative `LoadedImage` + project-file bytes used by the analyzer; it does not execute graph nodes or infer runtime behavior from the CFG.
+
+```text
+ProjectFile bytes + LoadedImage
+        ↓
+ExecutionPolicy / support check
+        ↓
+PT_LOAD sparse virtual memory + process stack + x86-64 registers
+        ↓
+Capstone decode at RIP
+        ↓
+bounded instruction semantics
+        ↓
+virtual syscall contract / observed ExecutionSnapshot
+        ↓
+Debug Console
+```
+
+The current provider intentionally accepts only fixed-address static ELF64 x86-64 executables. PIE, `PT_INTERP`, `DT_NEEDED`, unsupported instructions and unsupported syscalls fail closed. `read(0)`, `write(1|2)` and `exit`/`exit_group` are virtualized in-browser; they never invoke host kernel IO. Run mode executes in bounded batches and yields to the browser between batches so Pause remains meaningful.
+
+This is an emulator boundary, not native host execution. A browser cannot directly execute an ELF process; future dynamic linking/VFS work must extend the provider contracts rather than bypassing them through React or pretending a static program-flow traversal is execution.
 
 ## Global dependency registry
 

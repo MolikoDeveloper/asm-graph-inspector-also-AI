@@ -7,6 +7,8 @@ The current `main` branch was inspected before redesign. It contains `LICENSE` a
 ## Structural checks completed in this environment
 
 - TypeScript source syntax/internal-model check: PASS using the system TypeScript compiler with temporary React module shims because package installation is unavailable in this isolated runtime.
+- Execution-core strict TypeScript check: PASS with the system TypeScript compiler over the DOM-free execution/binary/Capstone modules.
+- Real ELF execution smoke test: PASS. A locally assembled/linked static ELF64 x86-64 `_start` program executed 8 machine instructions through the vendored Capstone provider, produced `hello\n` on virtual stdout and terminated with `exit(0)`.
 - Pure ASM analysis smoke test: PASS on the `Hello, world!` NASM sample.
   - 9 graph nodes (including `_start`).
   - 8 sequential/control edges.

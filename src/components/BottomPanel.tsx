@@ -1,6 +1,8 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, CheckCircle2, TerminalSquare } from 'lucide-react';
 import type { AssemblyProblem } from '../features/analysis/asmParser';
+import type { ExecutionSnapshot, ExecutionSupport } from '../features/execution/model';
+import { ExecutionConsole } from './ExecutionConsole';
 
 export interface OutputEntry {
   id: string;
@@ -9,16 +11,27 @@ export interface OutputEntry {
   message: string;
 }
 
-export function BottomPanel({ entries, problems, onSelectProblem }: {
+export function BottomPanel({ entries, problems, onSelectProblem, execution, executionSupport, executionTargetName, onExecutionPrepare, onExecutionRun, onExecutionPause, onExecutionStep, onExecutionReset }: {
   entries: OutputEntry[];
   problems: AssemblyProblem[];
   onSelectProblem(problem: AssemblyProblem): void;
+  execution: ExecutionSnapshot;
+  executionSupport: ExecutionSupport | null;
+  executionTargetName: string | null;
+  onExecutionPrepare(): void;
+  onExecutionRun(): void;
+  onExecutionPause(): void;
+  onExecutionStep(): void;
+  onExecutionReset(): void;
 }) {
   const [tab, setTab] = useState<'output' | 'problems' | 'debug'>('output');
   const errorCount = problems.filter((problem) => problem.severity === 'error').length;
   useEffect(() => {
     if (errorCount > 0) setTab('problems');
   }, [errorCount]);
+  useEffect(() => {
+    if (execution.status !== 'idle') setTab('debug');
+  }, [execution.status]);
 
   return (
     <section className="bottom-panel">
@@ -50,7 +63,7 @@ export function BottomPanel({ entries, problems, onSelectProblem }: {
           )) : <div className="problems-empty"><CheckCircle2 size={14} /> No problems in the active file.</div>}
         </div>
       ) : null}
-      {tab === 'debug' ? <div className="debug-console-placeholder">Execution/debug provider is not connected yet. This panel is reserved for observed runtime events.</div> : null}
+      {tab === 'debug' ? <ExecutionConsole snapshot={execution} support={executionSupport} targetName={executionTargetName} onPrepare={onExecutionPrepare} onRun={onExecutionRun} onPause={onExecutionPause} onStep={onExecutionStep} onReset={onExecutionReset} /> : null}
     </section>
   );
 }

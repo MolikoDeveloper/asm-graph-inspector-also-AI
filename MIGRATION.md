@@ -37,7 +37,7 @@ The vendored Capstone x86 5.0.9 provider now exposes the pinned operand-detail l
 
 For stripped binaries, `functionDiscovery.ts` prefers FDE coverage, then e_entry/section evidence, then recursive direct-call discovery and conservative tail-call/CET/prologue/alignment evidence. If authoritative `STT_FUNC`/`STT_GNU_IFUNC` symbols exist, stripped heuristics are suppressed. `linkage.ts` reconstructs `.plt`, `.plt.sec` and `.plt.got` only when a Capstone RIP-relative memory reference resolves to a raw-ELF relocation-backed GOT slot; `R_X86_64_IRELATIVE` is retained as IFUNC/loader evidence rather than fabricated as a normal call edge.
 
-This is intentionally not parity with V14.15 yet. Full CFI row interpretation/LSDA, old CFG edge semantics, Dataflow/SSA projections, Binary Map views, execution/VFS contracts and multi-range hot/cold functions remain pending. The important rule remains: migrate the engine as pure typed services rather than rebuilding the monolith inside React.
+This is intentionally not parity with V14.15 yet. Full CFI row interpretation/LSDA, old CFG edge semantics, Dataflow/SSA projections, Binary Map views, advanced execution/VFS semantics and multi-range hot/cold functions remain pending. The important rule remains: migrate the engine as pure typed services rather than rebuilding the monolith inside React.
 
 
 ## Migration checkpoint: function CFG + visible CFI + binary navigation
@@ -55,7 +55,7 @@ The right analysis dock now owns contextual tabs for CFG, Binary Map, Sections, 
 
 The workbench exposes the same analysis through five projections rather than leaking raw SSA as the default UI: **Flow**, **Registers**, **Memory**, **Calls / syscalls** and **Raw SSA**. Known Linux x86-64 syscall numbers reduce visible arguments to the ABI-defined arity, so `exit(60)` does not inherit stale RSI/RDX/R8/R9 edges from an earlier syscall. Raw SSA remains available for auditing definitions, entry values, phi values and clobbers.
 
-This is a migration checkpoint, not full V14.15 parity. The next dataflow slices are normalized memory ranges/alias sets, stack-frame normalization, flag/predicate flow, richer barrier provenance, focus/provenance navigation and large-function worker execution. The other pending V14.15 areas—advanced CFG, LSDA/exceptions, BuildArtifact/provenance, project bundles, execution/VFS/IO and `ray_test`—remain explicitly tracked in `PENDING.md`.
+This is a migration checkpoint, not full V14.15 parity. The next dataflow slices are normalized memory ranges/alias sets, stack-frame normalization, flag/predicate flow, richer barrier provenance, focus/provenance navigation and large-function worker execution. The other pending V14.15 areas—advanced CFG, LSDA/exceptions, BuildArtifact/provenance, project bundles, advanced execution/VFS/IO and `ray_test`—remain explicitly tracked in `PENDING.md`.
 
 ### Global dependency registry
 
@@ -69,3 +69,10 @@ The modular app now treats analysis as a live, transactional projection of proje
 The editor remains one surface but now has NASM-oriented syntax highlighting, graph/inspector navigation back to source lines, and binary navigation by static address. Imported ELF files default to a lazy **complete executable disassembly** view: executable ELF sections are decoded from raw bytes through the pinned Capstone provider and rendered with a fixed-row virtualized list, while the Hex view remains available as a secondary byte-oriented view.
 
 The workbench also gained resizable Explorer, editor/analysis, analysis/inspector and bottom-panel splits, plus mouse-anchored Canvas zoom. Project files support right-click operations and drag-to-folder/root movement; folder operations are path-prefix transformations over authoritative project files rather than hidden filesystem mutation.
+
+
+## Migration checkpoint: bounded real-binary execution
+
+The modular frontend now has a first `features/execution/` slice. It is not a visualization pretending to be a runtime: the provider maps authoritative ELF `PT_LOAD` bytes into sparse virtual memory, initializes x86-64 process registers/stack, decodes the instruction at the live RIP through the pinned Capstone provider, applies bounded instruction semantics, and exposes observed state to the Debug Console.
+
+The supported execution envelope is intentionally narrow: fixed-address static ELF64 x86-64. PIE, `PT_INTERP`, `DT_NEEDED`, unsupported opcodes and unsupported Linux syscalls are rejected. The virtual syscall surface currently covers stdin/stdout/stderr `read`/`write` plus `exit`/`exit_group`; no browser host filesystem or kernel syscall is invoked. This gives the next migration slices a truthful base for dynamic-loader, dependency address-space, VFS and richer CPU semantics work.

@@ -9,6 +9,8 @@ import { importBrowserFile } from '../features/project/fileImport';
 import { downloadProjectBundle } from '../features/project/projectExport';
 import { useProjectController } from '../features/project/useProjectController';
 import { useGlobalDependencies } from '../features/dependencies/useGlobalDependencies';
+import { executionSupport as inspectExecutionSupport } from '../features/execution/session';
+import { useExecutionController } from '../features/execution/useExecutionController';
 import type { ProjectFile } from '../features/project/model';
 import { initialWorkspaceState, type EditorRevealTarget } from '../features/workspace/model';
 import { workspaceReducer } from '../features/workspace/workspaceReducer';
@@ -31,6 +33,7 @@ export function App() {
   const projects = useProjectController();
   const { settings, setSettings } = useAppSettings();
   const globalDependencies = useGlobalDependencies();
+  const execution = useExecutionController();
   const [workspace, dispatch] = useReducer(workspaceReducer, initialWorkspaceState);
   const [settingsOpen, setSettingsOpen] = useState(false);
   const [aboutOpen, setAboutOpen] = useState(false);
@@ -60,10 +63,15 @@ export function App() {
   const activeGraph = activeFile ? graphs.get(activeFile.id) ?? null : null;
   const activeBinarySummary = activeFile ? binarySummaries.get(activeFile.id) ?? null : null;
   const activeProblems = activeFile ? problemsByFile.get(activeFile.id) ?? [] : [];
+  const executionTarget = useMemo(() => activeFile?.kind === 'binary' && activeBinarySummary ? { file: activeFile, image: activeBinarySummary.image } : null, [activeFile, activeBinarySummary]);
+  const activeExecutionSupport = useMemo(() => executionTarget ? inspectExecutionSupport(executionTarget.image) : null, [executionTarget]);
 
   useEffect(() => { graphsRef.current = graphs; }, [graphs]);
   useEffect(() => { selectedNodeRef.current = selectedNodeId; }, [selectedNodeId]);
   useEffect(() => { activeFileIdRef.current = activeFile?.id ?? null; }, [activeFile?.id]);
+  useEffect(() => {
+    if (execution.snapshot.targetFileId && execution.snapshot.targetFileId !== (activeFile?.id ?? null)) execution.clear();
+  }, [activeFile?.id, execution.snapshot.targetFileId, execution.clear]);
 
   const log = useCallback((message: string, level: OutputEntry['level'] = 'info') => {
     setOutput((entries) => [...entries.slice(-399), { id: makeId('log'), time: Date.now(), level, message }]);
@@ -176,6 +184,7 @@ export function App() {
     dispatch({ type: 'reset' });
     clearBinaryAnalysisCache();
     clearFullDisassemblyCache();
+    execution.clear();
     setGraphs(new Map());
     setBinarySummaries(new Map());
     setProblemsByFile(new Map());
@@ -186,7 +195,7 @@ export function App() {
       if (first) dispatch({ type: 'open-file', fileId: first.id });
       log(`Project loaded: ${project.name}`, 'success');
     }
-  }, [project?.id, project, log]);
+  }, [project?.id, project, log, execution.clear]);
 
   useEffect(() => {
     if (!activeFile) return;
@@ -307,6 +316,26 @@ export function App() {
     void runBinaryAnalysis(activeFile, address, false);
   }, [activeFile, runBinaryAnalysis]);
 
+  const prepareExecution = useCallback(async () => {
+    if (!executionTarget) { log('No analyzed binary is active for execution.', 'error'); return; }
+    await execution.prepare(executionTarget.file, executionTarget.image);
+  }, [execution, executionTarget, log]);
+
+  const stepExecution = useCallback(async () => {
+    if (!executionTarget) { log('No analyzed binary is active for execution.', 'error'); return; }
+    await execution.step(executionTarget.file, executionTarget.image);
+  }, [execution, executionTarget, log]);
+
+  const runExecution = useCallback(async () => {
+    if (!executionTarget) { log('No analyzed binary is active for execution.', 'error'); return; }
+    await execution.run(executionTarget.file, executionTarget.image);
+  }, [execution, executionTarget, log]);
+
+  const resetExecution = useCallback(async () => {
+    if (!executionTarget) { log('No analyzed binary is active for execution.', 'error'); return; }
+    await execution.reset(executionTarget.file, executionTarget.image);
+  }, [execution, executionTarget, log]);
+
   const exportCurrentProject = useCallback(() => {
     if (!project) return;
     try {
@@ -355,6 +384,16 @@ export function App() {
       ]
     },
     {
+      label: 'Run',
+      items: [
+        { label: 'Run Active Binary', shortcut: 'F6', action: () => void runExecution(), disabled: !executionTarget || activeExecutionSupport?.supported !== true },
+        { label: 'Step Instruction', shortcut: 'F10', action: () => void stepExecution(), disabled: !executionTarget || activeExecutionSupport?.supported !== true },
+        { label: 'Pause', action: execution.pause, disabled: execution.snapshot.status !== 'running' },
+        { separator: true, label: '' },
+        { label: 'Prepare / Reset', action: () => void resetExecution(), disabled: !executionTarget || activeExecutionSupport?.supported !== true }
+      ]
+    },
+    {
       label: 'Tools',
       items: [
         { label: 'Load Capstone x86', action: () => { setCapstoneStatus('loading'); void loadCapstone().then(() => { setCapstoneStatus('ready'); log('Capstone x86 loaded on demand.', 'success'); }).catch((error: unknown) => { setCapstoneStatus('error'); log(String(error), 'error'); }); } },
@@ -362,7 +401,7 @@ export function App() {
       ]
     },
     { label: 'Help', items: [{ label: 'About', action: () => setAboutOpen(true) }] }
-  ], [activeFile, projects, runAnalysis, workspace.activeGroupId, log, openNewFileDialog, exportCurrentProject]);
+  ], [activeFile, projects, runAnalysis, workspace.activeGroupId, log, openNewFileDialog, exportCurrentProject, runExecution, stepExecution, resetExecution, execution.pause, execution.snapshot.status, executionTarget, activeExecutionSupport]);
 
   useEffect(() => {
     folderInputRef.current?.setAttribute('webkitdirectory', '');
@@ -386,10 +425,12 @@ export function App() {
       if ((event.ctrlKey || event.metaKey) && event.key === ',') { event.preventDefault(); setSettingsOpen(true); }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'n') { event.preventDefault(); if (project) openNewFileDialog(''); }
       if (event.key === 'F5') { event.preventDefault(); void runAnalysis(); }
+      if (event.key === 'F6') { event.preventDefault(); void runExecution(); }
+      if (event.key === 'F10') { event.preventDefault(); void stepExecution(); }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [project, projects, runAnalysis, openNewFileDialog]);
+  }, [project, projects, runAnalysis, runExecution, stepExecution, openNewFileDialog]);
 
   if (!project) {
     return <ProjectGate projects={projects.summaries} loading={projects.loading} onCreate={projects.createProject} onOpen={projects.openProject} onDelete={projects.deleteProject} />;
@@ -474,7 +515,7 @@ export function App() {
             ) : null}
           </div>
           {workspace.bottomPanelVisible ? <ResizeHandle orientation="horizontal" onDelta={(delta) => dispatch({ type: 'resize-bottom', height: workspace.bottomPanelHeight - delta })} /> : null}
-          {workspace.bottomPanelVisible ? <div className="bottom-panel-shell" style={{ height: workspace.bottomPanelHeight }}><BottomPanel entries={output} problems={activeProblems} onSelectProblem={(problem) => { dispatch({ type: 'open-file', fileId: problem.fileId }); reveal(problem.fileId, { line: problem.line }); }} /></div> : null}
+          {workspace.bottomPanelVisible ? <div className="bottom-panel-shell" style={{ height: workspace.bottomPanelHeight }}><BottomPanel entries={output} problems={activeProblems} onSelectProblem={(problem) => { dispatch({ type: 'open-file', fileId: problem.fileId }); reveal(problem.fileId, { line: problem.line }); }} execution={execution.snapshot} executionSupport={activeExecutionSupport} executionTargetName={executionTarget?.file.name ?? null} onExecutionPrepare={() => void prepareExecution()} onExecutionRun={() => void runExecution()} onExecutionPause={execution.pause} onExecutionStep={() => void stepExecution()} onExecutionReset={() => void resetExecution()} /></div> : null}
         </main>
       </div>
       <StatusBar project={project} activeFile={activeFile} saveState={projects.saveState} capstoneStatus={capstoneStatus} nodeCount={activeGraph?.nodes.length ?? 0} />
