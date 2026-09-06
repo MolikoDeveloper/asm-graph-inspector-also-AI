@@ -13,6 +13,8 @@
 .program-flow-toolbar-main button { height: 23px; display: inline-flex; align-items: center; gap: 4px; padding: 0 7px; border: 1px solid #263746; border-radius: 4px; background: #0d171f; color: #8298aa; font-size: 8px; cursor: pointer; }
 .program-flow-toolbar-main button:hover { border-color: #376485; color: #d7e4ed; background: #12202a; }
 .program-flow-visited { color: #5f7487; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
+.program-flow-active { min-width: 0; max-width: 210px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; padding: 3px 6px; border: 1px solid #24445a; border-radius: 4px; background: #0d1b25; color: #8fc6e9; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.program-flow-interaction-hint { margin-left: auto; color: #526b7f; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; white-space: nowrap; }
 .program-flow-groups { min-width: 0; display: flex; gap: 4px; padding: 0 6px 5px; overflow-x: auto; scrollbar-width: thin; }
 .program-flow-groups button { flex: 0 0 auto; height: 22px; display: inline-flex; align-items: center; gap: 5px; padding: 0 7px; border: 1px solid #2a3b49; border-radius: 11px; background: #101a22; color: #91a5b6; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; cursor: pointer; }
 .program-flow-groups button:hover { border-color: #3f7599; color: #dce8f1; }
@@ -24,6 +26,8 @@
   .cfg-mode-picker span { display: none; }
   .cfg-mode-picker select { max-width: 120px; }
   .program-flow-toolbar-main label span { display: none; }
+  .program-flow-interaction-hint { display: none; }
+  .program-flow-active { max-width: 140px; }
 }
 
 @media (max-width: 900px) {

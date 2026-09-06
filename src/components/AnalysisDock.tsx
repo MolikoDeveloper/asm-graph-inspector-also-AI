@@ -70,7 +70,7 @@ export function AnalysisDock({
   const [projection, setProjection] = useState<DataflowProjection>('flow');
   const [disassemblyView, setDisassemblyView] = useState<DisassemblyView>('functions');
   const [cfgView, setCfgView] = useState<CfgView>('program');
-  const [programScope, setProgramScope] = useState<ProgramFlowScope>('visited');
+  const [programScope, setProgramScope] = useState<ProgramFlowScope>('focus');
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(() => new Set());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   const [summaryHistory, setSummaryHistory] = useState<Map<number, BinaryAnalysisSummary>>(() => new Map());
@@ -85,7 +85,7 @@ export function AnalysisDock({
     setSummaryHistory(new Map());
     setHiddenGroups(new Set());
     setExpandedGroups(new Set());
-    setProgramScope('visited');
+    setProgramScope('focus');
   }, [binaryFileId]);
 
   useEffect(() => {
@@ -143,7 +143,10 @@ export function AnalysisDock({
 
   const selectNode = (id: string | null) => {
     onSelect(id);
-    if (!id || !graphForInspector) return;
+  };
+
+  const activateNode = (id: string) => {
+    if (!graphForInspector) return;
     if (tab === 'cfg' && cfgView === 'program' && programFlow) {
       const action = programFlow.actions.get(id);
       if (action?.kind === 'function') {
@@ -217,6 +220,7 @@ export function AnalysisDock({
               expandedGroups={expandedGroups}
               scope={programScope}
               visitedCount={programFlow.visitedCount}
+              activeName={binarySummary.rootName}
               onScopeChange={setProgramScope}
               onToggleVisibility={toggleGroupVisibility}
               onShowAll={() => setHiddenGroups(new Set())}
@@ -225,7 +229,7 @@ export function AnalysisDock({
             />
           ) : null}
           <div className="analysis-dock analysis-dock-cfg" style={graphColumns}>
-            <GraphPanel graph={cfgGraph} title={binarySummary && cfgView === 'program' ? `Program flow · ${programFlow?.visitedCount ?? 0} visited` : graph?.viewKind === 'function-cfg' ? 'Function CFG' : 'Flow graph'} grid={grid} labels={labels} selectedId={selectedId} onSelect={selectNode} onClear={onClearGraph} />
+            <GraphPanel graph={cfgGraph} title={binarySummary && cfgView === 'program' ? `Program flow · ${programFlow?.visitedCount ?? 0} visited` : graph?.viewKind === 'function-cfg' ? 'Function CFG' : 'Flow graph'} grid={grid} labels={labels} selectedId={selectedId} onSelect={selectNode} onActivate={activateNode} onClear={onClearGraph} />
             <ResizeHandle orientation="vertical" onDelta={(delta) => setInspectorWidth((width) => Math.min(520, Math.max(190, width - delta)))} />
             <InspectorPanel graph={cfgGraph} selectedId={selectedId} stale={analysisStale} onNavigate={onNavigate} />
           </div>
@@ -234,7 +238,7 @@ export function AnalysisDock({
 
       {tab === 'dataflow' ? (
         <div className="analysis-dock analysis-dock-cfg" style={graphColumns}>
-          <GraphPanel graph={dataflowGraph} title={`Dataflow · ${DATAFLOW_PROJECTIONS.find((item) => item.id === projection)?.label ?? projection}`} grid={grid} labels={labels} selectedId={selectedId} onSelect={selectNode} onClear={onClearGraph} />
+          <GraphPanel graph={dataflowGraph} title={`Dataflow · ${DATAFLOW_PROJECTIONS.find((item) => item.id === projection)?.label ?? projection}`} grid={grid} labels={labels} selectedId={selectedId} onSelect={selectNode} onActivate={activateNode} onClear={onClearGraph} />
           <ResizeHandle orientation="vertical" onDelta={(delta) => setInspectorWidth((width) => Math.min(520, Math.max(190, width - delta)))} />
           <InspectorPanel graph={graphForInspector} selectedId={selectedId} stale={analysisStale} onNavigate={onNavigate} />
         </div>

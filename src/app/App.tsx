@@ -6,6 +6,7 @@ import type { AnalysisGraph, GraphNode } from '../features/analysis/model';
 import type { BinaryAnalysisSummary } from '../features/binary/model';
 import { loadCapstone, type CapstoneStatus } from '../features/capstone/capstoneLoader';
 import { importBrowserFile } from '../features/project/fileImport';
+import { downloadProjectBundle } from '../features/project/projectExport';
 import { useProjectController } from '../features/project/useProjectController';
 import { useGlobalDependencies } from '../features/dependencies/useGlobalDependencies';
 import type { ProjectFile } from '../features/project/model';
@@ -306,12 +307,23 @@ export function App() {
     void runBinaryAnalysis(activeFile, address, false);
   }, [activeFile, runBinaryAnalysis]);
 
+  const exportCurrentProject = useCallback(() => {
+    if (!project) return;
+    try {
+      const fileName = downloadProjectBundle(project);
+      log(`Exported project as ${fileName}. Global dependencies remain external.`, 'success');
+    } catch (error: unknown) {
+      log(`Project export failed: ${error instanceof Error ? error.message : String(error)}`, 'error');
+    }
+  }, [project, log]);
+
   const menus = useMemo<MenuDefinition[]>(() => [
     {
       label: 'Project',
       items: [
         { label: 'New / Switch Project…', action: projects.closeProject },
         { label: 'Save Project', shortcut: 'Ctrl S', action: () => void projects.saveNow() },
+        { label: 'Export Project…', action: exportCurrentProject },
         { separator: true, label: '' },
         { label: 'Settings…', shortcut: 'Ctrl ,', action: () => setSettingsOpen(true) }
       ]
@@ -350,7 +362,7 @@ export function App() {
       ]
     },
     { label: 'Help', items: [{ label: 'About', action: () => setAboutOpen(true) }] }
-  ], [activeFile, projects, runAnalysis, workspace.activeGroupId, log, openNewFileDialog]);
+  ], [activeFile, projects, runAnalysis, workspace.activeGroupId, log, openNewFileDialog, exportCurrentProject]);
 
   useEffect(() => {
     folderInputRef.current?.setAttribute('webkitdirectory', '');

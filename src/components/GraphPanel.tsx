@@ -20,7 +20,7 @@ function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, width:
   ctx.roundRect(x, y, width, height, radius);
 }
 
-export function GraphPanel({ graph, title = 'Flow graph', grid, labels, selectedId, onSelect, onClear }: { graph: AnalysisGraph | null; title?: string; grid: boolean; labels: boolean; selectedId: string | null; onSelect(id: string | null): void; onClear?(): void }) {
+export function GraphPanel({ graph, title = 'Flow graph', grid, labels, selectedId, onSelect, onActivate, onClear }: { graph: AnalysisGraph | null; title?: string; grid: boolean; labels: boolean; selectedId: string | null; onSelect(id: string | null): void; onActivate?(id: string): void; onClear?(): void }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
   const [viewport, setViewport] = useState<Viewport>({ x: 20, y: 10, zoom: 0.9 });
   const [drag, setDrag] = useState<{ x: number; y: number; originX: number; originY: number } | null>(null);
@@ -207,6 +207,12 @@ export function GraphPanel({ graph, title = 'Flow graph', grid, labels, selected
             const node = pickNode(event.clientX, event.clientY);
             if (node) { onSelect(node.id); return; }
             setDrag({ x: event.clientX, y: event.clientY, originX: viewport.x, originY: viewport.y });
+          }}
+          onDoubleClick={(event) => {
+            const node = pickNode(event.clientX, event.clientY);
+            if (!node) return;
+            onSelect(node.id);
+            onActivate?.(node.id);
           }}
           onMouseMove={(event) => {
             if (!drag) return;

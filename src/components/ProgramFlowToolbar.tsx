@@ -7,6 +7,7 @@ export function ProgramFlowToolbar({
   expandedGroups,
   scope,
   visitedCount,
+  activeName,
   onScopeChange,
   onToggleVisibility,
   onShowAll,
@@ -18,6 +19,7 @@ export function ProgramFlowToolbar({
   expandedGroups: Set<string>;
   scope: ProgramFlowScope;
   visitedCount: number;
+  activeName: string;
   onScopeChange(scope: ProgramFlowScope): void;
   onToggleVisibility(groupId: string): void;
   onShowAll(): void;
@@ -31,14 +33,17 @@ export function ProgramFlowToolbar({
           <GitBranch size={13} />
           <span>Scope</span>
           <select value={scope} onChange={(event) => onScopeChange(event.currentTarget.value as ProgramFlowScope)}>
+            <option value="focus">Focus</option>
             <option value="visited">Visited flow</option>
             <option value="all">All groups</option>
           </select>
         </label>
         <span className="program-flow-visited">{visitedCount} visited</span>
+        <span className="program-flow-active" title={activeName}>Focus: {activeName}</span>
         <button type="button" onClick={onShowAll}><Plus size={12} />Show all</button>
         <button type="button" onClick={onHideAll}><Minus size={12} />Hide all</button>
         <button type="button" onClick={onCompactAll}><ChevronRight size={12} />Compact all</button>
+        <span className="program-flow-interaction-hint">Click = inspect · Double-click = open / expand</span>
       </div>
       <div className="program-flow-groups" aria-label="Program flow group filters">
         {groups.map((group) => {

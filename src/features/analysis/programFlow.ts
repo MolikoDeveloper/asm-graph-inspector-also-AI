@@ -1,7 +1,7 @@
 import type { AnalysisGraph, GraphEdge, GraphNode } from './model';
 import type { BinaryAnalysisSummary, BinaryFunctionCandidate, ElfPltStub } from '../binary/model';
 
-export type ProgramFlowScope = 'visited' | 'all';
+export type ProgramFlowScope = 'focus' | 'visited' | 'all';
 
 export interface ProgramFlowGroup {
   id: string;
@@ -135,6 +135,14 @@ export function buildProgramFlow({
     }
   }
 
+  const focusAddresses = new Set<number>([activeAddress]);
+  for (const transfer of transfers) {
+    if (transfer.fromAddress !== activeAddress && transfer.toAddress !== activeAddress) continue;
+    focusAddresses.add(transfer.fromAddress);
+    focusAddresses.add(transfer.toAddress);
+  }
+  const scopedAddresses = scope === 'focus' ? focusAddresses : touchedAddresses;
+
   const groupsById = new Map<string, ProgramFlowGroup>();
   for (const entity of entityByAddress.values()) {
     const existing = groupsById.get(entity.groupId);
@@ -144,7 +152,7 @@ export function buildProgramFlow({
   const groups = [...groupsById.values()].sort((a, b) => a.label.localeCompare(b.label, undefined, { numeric: true, sensitivity: 'base' }));
 
   const touchedGroups = new Set<string>();
-  for (const address of touchedAddresses) {
+  for (const address of scopedAddresses) {
     const entity = entityByAddress.get(address);
     if (entity) touchedGroups.add(entity.groupId);
   }
@@ -164,6 +172,7 @@ export function buildProgramFlow({
   const entitiesByGroup = new Map<string, FlowEntity[]>();
   for (const entity of entityByAddress.values()) {
     if (!includedGroups.has(entity.groupId)) continue;
+    if (scope !== 'all' && !scopedAddresses.has(entity.address)) continue;
     const list = entitiesByGroup.get(entity.groupId) ?? [];
     list.push(entity);
     entitiesByGroup.set(entity.groupId, list);
@@ -228,18 +237,15 @@ export function buildProgramFlow({
       }
     }
   } else {
-    for (const address of touchedAddresses) {
+    for (const address of scopedAddresses) {
       const entity = entityByAddress.get(address);
       if (entity) ensureEntityNode(entity);
-    }
-    for (const groupId of expandedGroups) {
-      if (!includedGroups.has(groupId)) continue;
-      for (const entity of entitiesByGroup.get(groupId) ?? []) ensureEntityNode(entity);
     }
   }
 
   const aggregated = new Map<string, { from: string; to: string; calls: number; branches: number }>();
   for (const transfer of transfers) {
+    if (scope !== 'all' && (!scopedAddresses.has(transfer.fromAddress) || !scopedAddresses.has(transfer.toAddress))) continue;
     const sourceEntity = entityByAddress.get(transfer.fromAddress);
     const targetEntity = entityByAddress.get(transfer.toAddress);
     if (!sourceEntity || !targetEntity) continue;
@@ -273,7 +279,7 @@ export function buildProgramFlow({
       nodes,
       edges,
       labels,
-      diagnostics: [`Program flow: ${visitedAddresses.size} visited function(s), ${edges.length} visible interprocedural edge(s).`],
+      diagnostics: [`Program flow (${scope}): ${visitedAddresses.size} visited function(s), ${nodes.length} visible node(s), ${edges.length} visible interprocedural edge(s).`],
       sourceKind: 'raw-elf-capstone',
       architecture: 'x86-64',
       entryAddress: activeAddress,
