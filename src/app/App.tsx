@@ -9,9 +9,9 @@ import { importBrowserFile } from '../features/project/fileImport';
 import { downloadProjectBundle } from '../features/project/projectExport';
 import { useProjectController } from '../features/project/useProjectController';
 import { useGlobalDependencies } from '../features/dependencies/useGlobalDependencies';
-import { executionSupport as inspectExecutionSupport } from '../features/execution/session';
-import { useExecutionController } from '../features/execution/useExecutionController';
-import { executionAddressFromSnapshot, findBinaryFunctionForAddress, graphNodeForAddress, imageContainsExecutableAddress } from '../features/execution/follow';
+import { executionSupportForTarget, useExecutionController } from '../features/execution/useExecutionController';
+import { executionAddressFromSnapshot, findBinaryFunctionForAddress, graphNodeForAddress, imageContainsExecutableAddress, projectExecutionTrace } from '../features/execution/follow';
+import type { ExecutionTarget } from '../features/execution/model';
 import type { ProjectFile } from '../features/project/model';
 import { initialWorkspaceState, type EditorRevealTarget } from '../features/workspace/model';
 import { workspaceReducer } from '../features/workspace/workspaceReducer';
@@ -68,9 +68,14 @@ export function App() {
   const activeGraph = activeFile ? graphs.get(activeFile.id) ?? null : null;
   const activeBinarySummary = activeFile ? binarySummaries.get(activeFile.id) ?? null : null;
   const activeProblems = activeFile ? problemsByFile.get(activeFile.id) ?? [] : [];
-  const executionTarget = useMemo(() => activeFile?.kind === 'binary' && activeBinarySummary ? { file: activeFile, image: activeBinarySummary.image } : null, [activeFile, activeBinarySummary]);
-  const activeExecutionSupport = useMemo(() => executionTarget ? inspectExecutionSupport(executionTarget.image) : null, [executionTarget]);
+  const executionTarget = useMemo<ExecutionTarget | null>(() => {
+    if (activeFile?.kind === 'binary' && activeBinarySummary) return { kind: 'binary', file: activeFile, image: activeBinarySummary.image };
+    if (activeFile?.kind === 'text' && activeFile.language === 'asm') return { kind: 'asm-source', file: activeFile, source: activeFile.text ?? '' };
+    return null;
+  }, [activeFile, activeBinarySummary]);
+  const activeExecutionSupport = useMemo(() => executionTarget ? executionSupportForTarget(executionTarget) : null, [executionTarget]);
   const executionAddress = useMemo(() => executionAddressFromSnapshot(execution.snapshot), [execution.snapshot]);
+  const executionTrace = useMemo(() => projectExecutionTrace(activeGraph, execution.snapshot), [activeGraph, execution.snapshot]);
 
   useEffect(() => { graphsRef.current = graphs; }, [graphs]);
   useEffect(() => { selectedNodeRef.current = selectedNodeId; }, [selectedNodeId]);
@@ -241,6 +246,22 @@ export function App() {
   }, [activeBinarySummary, activeFile, activeGraph, execution.snapshot.targetFileId, executionAddress, reveal, runBinaryAnalysis]);
 
   useEffect(() => {
+    if (!activeFile || activeFile.kind !== 'text' || activeFile.language !== 'asm') return;
+    if (execution.snapshot.targetFileId !== activeFile.id) return;
+    if (execution.snapshot.status !== 'paused') return;
+    const instruction = execution.snapshot.lastInstruction;
+    if (!instruction?.line) return;
+    const nextRevealKey = `${activeFile.id}:line:${instruction.line}`;
+    if (executionFollowKey.current !== nextRevealKey) {
+      executionFollowKey.current = nextRevealKey;
+      reveal(activeFile.id, { line: instruction.line });
+    }
+    if (instruction.nodeId && activeGraph?.nodes.some((node) => node.id === instruction.nodeId) && selectedNodeRef.current !== instruction.nodeId) {
+      setSelectedNodeId(instruction.nodeId);
+    }
+  }, [activeFile, activeGraph, execution.snapshot.lastInstruction, execution.snapshot.status, execution.snapshot.targetFileId, reveal]);
+
+  useEffect(() => {
     if (!activeFile) return;
     const existingGraph = graphsRef.current.get(activeFile.id);
     setSelectedNodeId(existingGraph?.nodes[0]?.id ?? null);
@@ -360,23 +381,23 @@ export function App() {
   }, [activeFile, runBinaryAnalysis]);
 
   const prepareExecution = useCallback(async () => {
-    if (!executionTarget) { log('No analyzed binary is active for execution.', 'error'); return; }
-    await execution.prepare(executionTarget.file, executionTarget.image);
+    if (!executionTarget) { log('No executable binary or ASM source is active.', 'error'); return; }
+    await execution.prepare(executionTarget);
   }, [execution, executionTarget, log]);
 
   const stepExecution = useCallback(async () => {
-    if (!executionTarget) { log('No analyzed binary is active for execution.', 'error'); return; }
-    await execution.step(executionTarget.file, executionTarget.image);
+    if (!executionTarget) { log('No executable binary or ASM source is active.', 'error'); return; }
+    await execution.step(executionTarget);
   }, [execution, executionTarget, log]);
 
   const runExecution = useCallback(async () => {
-    if (!executionTarget) { log('No analyzed binary is active for execution.', 'error'); return; }
-    await execution.run(executionTarget.file, executionTarget.image);
+    if (!executionTarget) { log('No executable binary or ASM source is active.', 'error'); return; }
+    await execution.run(executionTarget);
   }, [execution, executionTarget, log]);
 
   const resetExecution = useCallback(async () => {
-    if (!executionTarget) { log('No analyzed binary is active for execution.', 'error'); return; }
-    await execution.reset(executionTarget.file, executionTarget.image);
+    if (!executionTarget) { log('No executable binary or ASM source is active.', 'error'); return; }
+    await execution.reset(executionTarget);
   }, [execution, executionTarget, log]);
 
   const exportCurrentProject = useCallback(() => {
@@ -429,7 +450,7 @@ export function App() {
     {
       label: 'Run',
       items: [
-        { label: 'Run Active Binary', shortcut: 'F6', action: () => void runExecution(), disabled: !executionTarget || activeExecutionSupport?.supported !== true },
+        { label: 'Run Active Program', shortcut: 'F6', action: () => void runExecution(), disabled: !executionTarget || activeExecutionSupport?.supported !== true },
         { label: 'Step Instruction', shortcut: 'F10', action: () => void stepExecution(), disabled: !executionTarget || activeExecutionSupport?.supported !== true },
         { label: 'Pause', action: execution.pause, disabled: execution.snapshot.status !== 'running' },
         { separator: true, label: '' },
@@ -555,6 +576,7 @@ export function App() {
                 onNavigate={navigateFromNode}
                 onSelectFunction={selectBinaryFunction}
                 executionAddress={executionAddress}
+                executionTrace={executionTrace}
               />
             ) : null}
           </div>

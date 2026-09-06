@@ -29,6 +29,8 @@
 - [x] Port the first modular Dataflow/SSA slice: register SSA values, join phi nodes, constants/copies/arithmetic, ABI call/syscall effects and Flow/Registers/Memory/Calls/Raw-SSA projections for source ASM and canonical binary instructions.
 - [ ] Complete V14.15 Dataflow parity: range-normalized memory cells, alias sets, stack-frame normalization, flags/predicates, SIMD/x87 barriers, richer unknown provenance and large-function fixed-point budgets.
 - [x] Port the first execution policy/session/provider slice: fixed-address static ELF64 x86-64, PT_LOAD virtual memory, process stack/register state, Capstone-driven stepping, bounded run loop and virtual stdin/stdout/stderr + `read`/`write`/`exit` syscalls.
+- [x] Add raw ASM source execution independent of ELF/Linux: source-PC machine state, labels/branches/calls/stack/registers, source-line stepping and a Linux Lite `read`/`write`/`exit` syscall surface.
+- [x] Project observed execution traces onto the Canvas: current-node focus, visited-node counters and traversed-edge highlighting for source ASM and address-backed binary CFGs.
 - [x] Route PIE / `PT_INTERP` / `DT_NEEDED` Process Sandbox execution to a pinned Blink/WASM provider instead of growing the bounded instruction provider into a Linux dynamic loader.
 - [x] Materialize direct + transitive `DT_NEEDED` closure from Global Dependencies without touching the host filesystem; mount the closure only inside Blink MEMFS.
 - [ ] Finish Blink interactive stdin, syscall/VFS policy interception, execution-event normalization and precise run-quantum instruction accounting.
@@ -65,9 +67,22 @@
 
 ## Execution follow-up after V11
 
+- [ ] Replace source-semantic raw ASM execution with an optional real assembler-backed byte path (NASM/FASM-compatible) while preserving the current source mapping for debugger UX.
+- [ ] Expand Linux Lite only as a bounded syscall provider; do not turn it into a second dynamic loader/process emulator.
+
 - [x] Route dynamic Process Sandbox Run through Blink headless `run_fast` + preemption resume instead of debugger `continue`.
 - [x] Keep headless Run register state explicitly unavailable rather than exposing stale `clstruct` pointers.
 - [x] Follow paused execution in the UI: reveal the live PC in binary disassembly, switch binary graphs to Function CFG during stepping and focus the current basic block on the canvas.
 - [ ] Extend the vendored Blink ABI with register snapshots that do not depend on its internal disassembler, then unify Step and Run without a Reset boundary.
 - [x] Capture Blink/Emscripten provider diagnostics (`print`, `printErr`, `onAbort`) in execution snapshots; aggregate repeated host warnings and preserve thrown WASM stacks instead of relying on browser DevTools.
 - [ ] Root-cause the remaining Blink/WASM native `abort()` reached by dynamically linked glibc `ray_test`; do not attribute it to `__syscall_mprotect` without independent evidence because Emscripten's compatibility stub returns success.
+
+## Headless execution follow-up
+
+- [x] Expose ASM source execution without React/UI state.
+- [x] Expose static ELF execution without React/UI state.
+- [x] Add a Bun CLI that auto-detects ASM vs ELF and supports JSON/trace output.
+- [x] Add zero-UI smoke tests for ASM and static ELF.
+- [x] Load vendored Capstone WASM from the headless runtime rather than through `window`/`document`.
+- [ ] Make `blink-process` reliable in a headless runtime so dynamic ELF (`PT_INTERP` / `DT_NEEDED`) can use the same CLI contract.
+- [ ] Replace source-semantic ASM execution with an assembler-backed machine-byte path while preserving source mapping and execution events.

@@ -1,7 +1,8 @@
-import type { CanonicalInstruction, LoadedImage } from '../binary/model';
+import type { LoadedImage } from '../binary/model';
+import type { ProjectFile } from '../project/model';
 
 export type ExecutionStatus = 'idle' | 'ready' | 'running' | 'paused' | 'exited' | 'halted' | 'trapped';
-export type ExecutionProviderKind = 'bounded-x86-64' | 'blink-process';
+export type ExecutionProviderKind = 'bounded-x86-64' | 'asm-source-x86-64' | 'blink-process';
 export type ExecutionSyscallPolicy = 'none' | 'stdio-exit';
 
 export interface ExecutionPolicy {
@@ -47,9 +48,18 @@ export interface ExecutionProviderDiagnostic {
   count: number;
 }
 
+export interface ExecutionInstructionSnapshot {
+  address: number;
+  endAddress: number;
+  mnemonic: string;
+  operands: string;
+  line?: number;
+  nodeId?: string;
+}
+
 export type ExecutionEvent =
   | { kind: 'prepared'; message: string }
-  | { kind: 'instruction'; address: number; mnemonic: string; operands: string }
+  | { kind: 'instruction'; address: number; mnemonic: string; operands: string; line?: number; nodeId?: string }
   | { kind: 'stdout'; text: string }
   | { kind: 'stderr'; text: string }
   | { kind: 'syscall'; number: number; name: string; detail: string }
@@ -66,7 +76,7 @@ export interface ExecutionSnapshot {
   provider: ExecutionProviderKind | null;
   instructionCount: number;
   registers: ExecutionRegisterSnapshot | null;
-  lastInstruction: CanonicalInstruction | null;
+  lastInstruction: ExecutionInstructionSnapshot | null;
   stdout: string;
   stderr: string;
   exitCode: number | null;
@@ -74,6 +84,11 @@ export interface ExecutionSnapshot {
   providerDiagnostics: ExecutionProviderDiagnostic[];
   events: ExecutionEvent[];
 }
+
+
+export type ExecutionTarget =
+  | { kind: 'binary'; file: ProjectFile; image: LoadedImage }
+  | { kind: 'asm-source'; file: ProjectFile; source: string };
 
 export interface ExecutionSupport {
   supported: boolean;

@@ -5,6 +5,7 @@ const INSTRUCTION_RE = /^\s*([A-Za-z][\w.]*)\s*(.*?)\s*$/;
 const DIRECT_TARGET_RE = /^(?:short\s+|near\s+)?([.$A-Za-z_][\w.$@?]*|0x[0-9a-f]+)$/i;
 const DIRECTIVE_RE = /^\s*(section|segment|global|extern|bits|default|align|org|gsection|cpu|use16|use32|use64)\b/i;
 const DATA_RE = /^\s*[A-Za-z_.$][\w.$@?]*:?\s+(db|dw|dd|dq|dt|do|dy|dz|resb|resw|resd|resq|rest|reso|resy|resz|equ|times)\b/i;
+const BARE_DATA_RE = /^\s*(db|dw|dd|dq|dt|do|dy|dz|resb|resw|resd|resq|rest|reso|resy|resz|times)\b/i;
 const PREPROCESSOR_RE = /^\s*%/;
 const ZERO_OPERAND = new Set([
   'ret', 'retq', 'iret', 'iretq', 'nop', 'syscall', 'sysenter', 'sysexit', 'leave', 'hlt', 'ud2', 'pause',
@@ -109,15 +110,19 @@ export function analyzeAssemblyChecked(fileId: string, source: string): Assembly
     const labelMatch = code.match(LABEL_PREFIX_RE);
     if (labelMatch) {
       const [, label, remainder] = labelMatch;
-      const id = `${fileId}:label:${lineNumber}:${label}`;
-      if (labels.has(label)) problems.push(syntaxProblem(fileId, lineNumber, Math.max(1, raw.indexOf(label) + 1), `Duplicate label “${label}”.`));
-      labels.set(label, id);
-      nodes.push({ id, line: lineNumber, title: label, detail: `line ${lineNumber}`, kind: 'label' });
-      code = remainder.trim();
+      const remainderCode = remainder.trim();
+      const dataLabel = BARE_DATA_RE.test(remainderCode);
+      const id = `${fileId}:${dataLabel ? 'data' : 'label'}:${lineNumber}:${label}`;
+      if (!dataLabel) {
+        if (labels.has(label)) problems.push(syntaxProblem(fileId, lineNumber, Math.max(1, raw.indexOf(label) + 1), `Duplicate label “${label}”.`));
+        labels.set(label, id);
+      }
+      nodes.push({ id, line: lineNumber, title: label, detail: `line ${lineNumber}${dataLabel ? ' · data' : ''}`, kind: dataLabel ? 'data' : 'label' });
+      code = remainderCode;
       if (!code) continue;
     }
 
-    if (DIRECTIVE_RE.test(code) || DATA_RE.test(code)) continue;
+    if (DIRECTIVE_RE.test(code) || DATA_RE.test(code) || BARE_DATA_RE.test(code)) continue;
     // Common NASM constant assignment form without a colon: name equ expression.
     if (/^[A-Za-z_.$][\w.$@?]*\s+equ\b/i.test(code)) continue;
 
@@ -147,9 +152,10 @@ export function analyzeAssemblyChecked(fileId: string, source: string): Assembly
     });
   }
 
-  for (let index = 0; index < nodes.length - 1; index += 1) {
-    const current = nodes[index];
-    const next = nodes[index + 1];
+  const controlNodes = nodes.filter((node) => node.kind !== 'data');
+  for (let index = 0; index < controlNodes.length - 1; index += 1) {
+    const current = controlNodes[index];
+    const next = controlNodes[index + 1];
     const mnemonic = current.mnemonic?.toLowerCase() ?? current.title.split(/\s+/, 1)[0].toLowerCase();
     if (mnemonic === 'ret' || mnemonic === 'retq' || mnemonic === 'ud2') continue;
     if (mnemonic === 'jmp') continue;

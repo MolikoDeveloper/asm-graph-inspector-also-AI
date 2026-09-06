@@ -1,12 +1,11 @@
 import { useCallback, useRef, useState } from 'react';
-import type { LoadedImage } from '../binary/model';
 import { loadCapstone } from '../capstone/capstoneLoader';
-import type { ProjectFile } from '../project/model';
-import { DEFAULT_EXECUTION_POLICY, type ExecutionSnapshot } from './model';
+import { AsmSourceExecutionSession, asmSourceExecutionSupport } from './asmSourceSession';
+import { DEFAULT_EXECUTION_POLICY, type ExecutionSnapshot, type ExecutionSupport, type ExecutionTarget } from './model';
 import { BlinkProcessSession } from './blinkProcessSession';
 import { executionSupport, X86ExecutionSession } from './session';
 
-type BrowserExecutionSession = X86ExecutionSession | BlinkProcessSession;
+type BrowserExecutionSession = X86ExecutionSession | AsmSourceExecutionSession | BlinkProcessSession;
 
 const IDLE_SNAPSHOT: ExecutionSnapshot = {
   status: 'idle',
@@ -25,16 +24,27 @@ const IDLE_SNAPSHOT: ExecutionSnapshot = {
   events: []
 };
 
-function failedSnapshot(file: ProjectFile, image: LoadedImage, reason: string): ExecutionSnapshot {
+export function executionSupportForTarget(target: ExecutionTarget): ExecutionSupport {
+  return target.kind === 'binary' ? executionSupport(target.image) : asmSourceExecutionSupport(target.file, target.source);
+}
+
+function failedSnapshot(target: ExecutionTarget, reason: string): ExecutionSnapshot {
   return {
     ...IDLE_SNAPSHOT,
     status: 'trapped',
-    targetFileId: file.id,
-    targetName: file.name,
-    imageKind: image.kind,
+    targetFileId: target.file.id,
+    targetName: target.file.name,
+    imageKind: target.kind === 'binary' ? target.image.kind : null,
     trapReason: reason,
     events: [{ kind: 'trap', reason }]
   };
+}
+
+function sameTarget(session: BrowserExecutionSession, target: ExecutionTarget): boolean {
+  if (session.file.id !== target.file.id) return false;
+  if (target.kind === 'asm-source') return session instanceof AsmSourceExecutionSession && session.source === target.source;
+  if (session instanceof AsmSourceExecutionSession) return false;
+  return session.image.entry === target.image.entry && session.image.kind === target.image.kind;
 }
 
 function nextFrame(): Promise<void> {
@@ -46,17 +56,22 @@ export function useExecutionController() {
   const sessionRef = useRef<BrowserExecutionSession | null>(null);
   const runGeneration = useRef(0);
 
-  const createSession = useCallback(async (file: ProjectFile, image: LoadedImage, force = false): Promise<BrowserExecutionSession | null> => {
+  const createSession = useCallback(async (target: ExecutionTarget, force = false): Promise<BrowserExecutionSession | null> => {
     const current = sessionRef.current;
-    if (!force && current && current.file.id === file.id && current.image.entry === image.entry) return current;
+    if (!force && current && sameTarget(current, target)) return current;
     const generation = ++runGeneration.current;
     current?.dispose();
     try {
-      const support = executionSupport(image);
+      const support = executionSupportForTarget(target);
       if (!support.supported || !support.provider) throw new Error(support.reasons.join(' '));
-      const session: BrowserExecutionSession = support.provider === 'blink-process'
-        ? await BlinkProcessSession.create(file, image, DEFAULT_EXECUTION_POLICY)
-        : new X86ExecutionSession(file, image, await loadCapstone(), DEFAULT_EXECUTION_POLICY);
+      let session: BrowserExecutionSession;
+      if (target.kind === 'asm-source') {
+        session = new AsmSourceExecutionSession(target.file, target.source, DEFAULT_EXECUTION_POLICY);
+      } else if (support.provider === 'blink-process') {
+        session = await BlinkProcessSession.create(target.file, target.image, DEFAULT_EXECUTION_POLICY);
+      } else {
+        session = new X86ExecutionSession(target.file, target.image, await loadCapstone(), DEFAULT_EXECUTION_POLICY);
+      }
       if (runGeneration.current !== generation) {
         session.dispose();
         return null;
@@ -67,25 +82,25 @@ export function useExecutionController() {
     } catch (error: unknown) {
       if (runGeneration.current !== generation) return null;
       sessionRef.current = null;
-      setSnapshot(failedSnapshot(file, image, error instanceof Error ? error.message : String(error)));
+      setSnapshot(failedSnapshot(target, error instanceof Error ? error.message : String(error)));
       return null;
     }
   }, []);
 
-  const prepare = useCallback(async (file: ProjectFile, image: LoadedImage) => {
-    await createSession(file, image, true);
+  const prepare = useCallback(async (target: ExecutionTarget) => {
+    await createSession(target, true);
   }, [createSession]);
 
-  const step = useCallback(async (file: ProjectFile, image: LoadedImage) => {
+  const step = useCallback(async (target: ExecutionTarget) => {
     runGeneration.current += 1;
-    const session = await createSession(file, image, false);
+    const session = await createSession(target, false);
     if (!session) return;
     session.pause();
     setSnapshot(session.step());
   }, [createSession]);
 
-  const run = useCallback(async (file: ProjectFile, image: LoadedImage) => {
-    const session = await createSession(file, image, false);
+  const run = useCallback(async (target: ExecutionTarget) => {
+    const session = await createSession(target, false);
     if (!session) return;
     if (session.status === 'exited' || session.status === 'halted' || session.status === 'trapped') return;
     const generation = ++runGeneration.current;
@@ -107,8 +122,8 @@ export function useExecutionController() {
     setSnapshot(session.snapshot());
   }, []);
 
-  const reset = useCallback(async (file: ProjectFile, image: LoadedImage) => {
-    await createSession(file, image, true);
+  const reset = useCallback(async (target: ExecutionTarget) => {
+    await createSession(target, true);
   }, [createSession]);
 
   const clear = useCallback(() => {

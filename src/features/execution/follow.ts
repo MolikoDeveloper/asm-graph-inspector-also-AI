@@ -36,3 +36,63 @@ export function graphNodeForAddress(graph: AnalysisGraph | null, address: number
 export function imageContainsExecutableAddress(summary: BinaryAnalysisSummary, address: number): boolean {
   return summary.image.segments.some((segment) => segment.executable && address >= segment.virtualAddress && address < segment.virtualAddress + segment.memorySize);
 }
+
+export interface ExecutionTraceProjection {
+  nodeCounts: Map<string, number>;
+  edgeCounts: Map<string, number>;
+  currentNodeId: string | null;
+}
+
+function eventNodeId(graph: AnalysisGraph, event: Extract<ExecutionSnapshot['events'][number], { kind: 'instruction' }>): string | null {
+  if (event.nodeId && graph.nodes.some((node) => node.id === event.nodeId)) return event.nodeId;
+  return graphNodeForAddress(graph, event.address)?.id ?? null;
+}
+
+function edgePath(graph: AnalysisGraph, from: string, to: string, maxDepth = 3): string[] {
+  if (from === to) return [];
+  const outgoing = new Map<string, typeof graph.edges>();
+  for (const edge of graph.edges) {
+    const bucket = outgoing.get(edge.from) ?? [];
+    bucket.push(edge);
+    outgoing.set(edge.from, bucket);
+  }
+  const queue: Array<{ node: string; path: string[] }> = [{ node: from, path: [] }];
+  const seen = new Set([from]);
+  while (queue.length) {
+    const current = queue.shift()!;
+    if (current.path.length >= maxDepth) continue;
+    for (const edge of outgoing.get(current.node) ?? []) {
+      const path = [...current.path, edge.id];
+      if (edge.to === to) return path;
+      if (seen.has(edge.to)) continue;
+      seen.add(edge.to);
+      queue.push({ node: edge.to, path });
+    }
+  }
+  return [];
+}
+
+export function projectExecutionTrace(graph: AnalysisGraph | null, snapshot: ExecutionSnapshot): ExecutionTraceProjection {
+  const nodeCounts = new Map<string, number>();
+  const edgeCounts = new Map<string, number>();
+  if (!graph || snapshot.targetFileId !== graph.fileId) return { nodeCounts, edgeCounts, currentNodeId: null };
+
+  let previousNodeId: string | null = null;
+  for (const event of snapshot.events) {
+    if (event.kind !== 'instruction') continue;
+    const nodeId = eventNodeId(graph, event);
+    if (!nodeId) { previousNodeId = null; continue; }
+    nodeCounts.set(nodeId, (nodeCounts.get(nodeId) ?? 0) + 1);
+    if (previousNodeId) {
+      for (const edgeId of edgePath(graph, previousNodeId, nodeId)) edgeCounts.set(edgeId, (edgeCounts.get(edgeId) ?? 0) + 1);
+    }
+    previousNodeId = nodeId;
+  }
+
+  let currentNodeId: string | null = null;
+  if (snapshot.status === 'paused' || snapshot.status === 'running') {
+    if (snapshot.lastInstruction?.nodeId && graph.nodes.some((node) => node.id === snapshot.lastInstruction!.nodeId)) currentNodeId = snapshot.lastInstruction.nodeId;
+    else if (snapshot.lastInstruction) currentNodeId = graphNodeForAddress(graph, snapshot.lastInstruction.address)?.id ?? null;
+  }
+  return { nodeCounts, edgeCounts, currentNodeId };
+}

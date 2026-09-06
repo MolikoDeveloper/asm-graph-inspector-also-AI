@@ -4,7 +4,7 @@ import type { AnalysisGraph } from '../features/analysis/model';
 import { analyzeDataflow, projectDataflow, type DataflowProjection } from '../features/analysis/dataflow';
 import { buildProgramFlow, type ProgramFlowScope } from '../features/analysis/programFlow';
 import type { BinaryAnalysisSummary } from '../features/binary/model';
-import { graphNodeForAddress } from '../features/execution/follow';
+import { graphNodeForAddress, type ExecutionTraceProjection } from '../features/execution/follow';
 import { BinaryModelView, type BinaryModelViewKind } from './BinaryModelView';
 import { FunctionTree } from './FunctionTree';
 import { GraphPanel } from './GraphPanel';
@@ -57,7 +57,8 @@ export function AnalysisDock({
   analysisStale = false,
   onNavigate,
   onSelectFunction,
-  executionAddress = null
+  executionAddress = null,
+  executionTrace = null
 }: {
   graph: AnalysisGraph | null;
   binarySummary: BinaryAnalysisSummary | null;
@@ -70,6 +71,7 @@ export function AnalysisDock({
   onNavigate(node: { line?: number; address?: number }): void;
   onSelectFunction(address: number): void;
   executionAddress?: number | null;
+  executionTrace?: ExecutionTraceProjection | null;
 }) {
   const [tab, setTab] = useState<AnalysisTab>('cfg');
   const [projection, setProjection] = useState<DataflowProjection>('flow');
@@ -134,10 +136,13 @@ export function AnalysisDock({
 
 
   useEffect(() => {
-    if (!binarySummary || executionAddress === null || executionAddress === undefined) return;
-    setTab('cfg');
-    setCfgView('function');
-  }, [binarySummary, executionAddress]);
+    if (binarySummary && executionAddress !== null && executionAddress !== undefined) {
+      setTab('cfg');
+      setCfgView('function');
+      return;
+    }
+    if (!binarySummary && executionTrace?.currentNodeId) setTab('cfg');
+  }, [binarySummary, executionAddress, executionTrace?.currentNodeId]);
 
   useEffect(() => {
     if (!executionNodeId) return;
@@ -248,7 +253,7 @@ export function AnalysisDock({
             />
           ) : null}
           <div className="analysis-dock analysis-dock-cfg" style={graphColumns}>
-            <GraphPanel graph={cfgGraph} title={binarySummary && cfgView === 'program' ? `Program flow · ${programFlow?.visitedCount ?? 0} visited` : graph?.viewKind === 'function-cfg' ? 'Function CFG' : 'Flow graph'} grid={grid} labels={labels} selectedId={selectedId} focusId={executionNodeId} onSelect={selectNode} onActivate={activateNode} onClear={onClearGraph} />
+            <GraphPanel graph={cfgGraph} title={binarySummary && cfgView === 'program' ? `Program flow · ${programFlow?.visitedCount ?? 0} visited` : graph?.viewKind === 'function-cfg' ? 'Function CFG' : 'Flow graph'} grid={grid} labels={labels} selectedId={selectedId} focusId={executionNodeId} trace={cfgView === 'function' || !binarySummary ? executionTrace : null} onSelect={selectNode} onActivate={activateNode} onClear={onClearGraph} />
             <ResizeHandle orientation="vertical" onDelta={(delta) => setInspectorWidth((width) => Math.min(520, Math.max(190, width - delta)))} />
             <InspectorPanel graph={cfgGraph} selectedId={selectedId} stale={analysisStale} onNavigate={onNavigate} />
           </div>

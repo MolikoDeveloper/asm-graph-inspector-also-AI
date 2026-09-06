@@ -2,6 +2,7 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Crosshair, GitBranch, Minus, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import type { AnalysisGraph, GraphNode } from '../features/analysis/model';
 import { layoutGraph, type PositionedGraphNode } from '../features/analysis/layout';
+import type { ExecutionTraceProjection } from '../features/execution/follow';
 import { EmptyState, IconButton } from './ui';
 
 interface Viewport { x: number; y: number; zoom: number; }
@@ -70,6 +71,7 @@ export function GraphPanel({
   labels,
   selectedId,
   focusId = null,
+  trace = null,
   onSelect,
   onActivate,
   onClear
@@ -80,6 +82,7 @@ export function GraphPanel({
   labels: boolean;
   selectedId: string | null;
   focusId?: string | null;
+  trace?: ExecutionTraceProjection | null;
   onSelect(id: string | null): void;
   onActivate?(id: string): void;
   onClear?(): void;
@@ -142,8 +145,9 @@ export function GraphPanel({
       const y1 = horizontalDataEdge ? from.y + from.height / 2 : from.y + from.height;
       const x2 = horizontalDataEdge ? (to.x >= from.x ? to.x : to.x + to.width) : to.x + to.width / 2;
       const y2 = horizontalDataEdge ? to.y + to.height / 2 : to.y;
-      ctx.strokeStyle = edge.kind === 'call' ? '#d06a72' : edge.kind === 'branch' ? '#7e6ad8' : edge.kind === 'data' ? '#43a88a' : '#3d79a8';
-      ctx.lineWidth = edge.kind === 'control' ? 1.4 : edge.kind === 'data' ? 1.35 : 1.8;
+      const traceCount = trace?.edgeCounts.get(edge.id) ?? 0;
+      ctx.strokeStyle = traceCount ? '#c9a84d' : edge.kind === 'call' ? '#d06a72' : edge.kind === 'branch' ? '#7e6ad8' : edge.kind === 'data' ? '#43a88a' : '#3d79a8';
+      ctx.lineWidth = traceCount ? 2.8 : edge.kind === 'control' ? 1.4 : edge.kind === 'data' ? 1.35 : 1.8;
       ctx.beginPath();
       let labelX: number;
       let labelY: number;
@@ -180,21 +184,23 @@ export function GraphPanel({
       const palette = NODE_COLORS[node.kind];
       const selected = node.id === selectedId;
       const focused = !!focusId && node.id === focusId;
+      const current = trace?.currentNodeId === node.id;
+      const executionCount = trace?.nodeCounts.get(node.id) ?? 0;
       ctx.globalAlpha = node.reachable === false ? 0.42 : 1;
       roundedRect(ctx, node.x, node.y, node.width, node.height, 6);
       ctx.fillStyle = palette.fill;
       ctx.fill();
-      ctx.strokeStyle = selected ? '#67b9ff' : focused ? '#f8d66d' : palette.stroke;
-      ctx.lineWidth = selected ? 2.4 : focused ? 2 : 1.25;
+      ctx.strokeStyle = current ? '#ffd866' : selected ? '#67b9ff' : focused ? '#f8d66d' : executionCount ? '#b99b47' : palette.stroke;
+      ctx.lineWidth = current ? 3 : selected ? 2.4 : focused || executionCount ? 2 : 1.25;
       ctx.stroke();
-      if (selected || focused) {
-        ctx.shadowColor = selected ? '#2d8bd8' : '#b78a1f';
-        ctx.shadowBlur = selected ? 16 : 12;
+      if (selected || focused || current) {
+        ctx.shadowColor = current ? '#d3aa31' : selected ? '#2d8bd8' : '#b78a1f';
+        ctx.shadowBlur = current ? 20 : selected ? 16 : 12;
         ctx.stroke();
         ctx.shadowBlur = 0;
       }
-      if (focused) {
-        ctx.fillStyle = '#f8d66d';
+      if (focused || current) {
+        ctx.fillStyle = current ? '#ffd866' : '#f8d66d';
         ctx.beginPath();
         ctx.arc(node.x + node.width - 12, node.y + 12, 4.2, 0, Math.PI * 2);
         ctx.fill();
@@ -206,10 +212,20 @@ export function GraphPanel({
       ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
       ctx.fillStyle = '#74869a';
       ctx.fillText(node.detail, node.x + 12, node.y + node.height - 10);
+      if (executionCount > 0) {
+        const badge = executionCount > 9999 ? '9999+' : `×${executionCount}`;
+        ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+        const badgeWidth = ctx.measureText(badge).width + 10;
+        roundedRect(ctx, node.x + node.width - badgeWidth - 8, node.y + node.height - 22, badgeWidth, 16, 4);
+        ctx.fillStyle = current ? '#5c4811' : '#342d1b';
+        ctx.fill();
+        ctx.fillStyle = current ? '#ffe69a' : '#d8bd72';
+        ctx.fillText(badge, node.x + node.width - badgeWidth - 3, node.y + node.height - 10);
+      }
       ctx.globalAlpha = 1;
     }
     ctx.restore();
-  }, [focusId, graph, grid, labels, measureHost, nodeById, positioned, selectedId, viewport]);
+  }, [focusId, graph, grid, labels, measureHost, nodeById, positioned, selectedId, trace, viewport]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -236,13 +252,13 @@ export function GraphPanel({
   }, [fitGraph, graph?.fileId, graph?.functionAddress, graph?.viewKind, positioned.length]);
 
   useEffect(() => {
-    const targetId = focusId ?? selectedId;
+    const targetId = trace?.currentNodeId ?? focusId ?? selectedId;
     if (!targetId) return;
     const node = nodeById.get(targetId);
     const measured = measureHost();
     if (!node || !measured) return;
     setViewport((current) => centerViewport(node, measured.width, measured.height, current.zoom));
-  }, [focusId, measureHost, nodeById, selectedId]);
+  }, [focusId, measureHost, nodeById, selectedId, trace?.currentNodeId]);
 
   function screenToGraph(clientX: number, clientY: number) {
     const canvas = canvasRef.current!;

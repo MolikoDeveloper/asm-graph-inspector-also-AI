@@ -52,14 +52,15 @@ The app does not have a loose-file state. When there is no active project, the f
 Text edits autosave after a short debounce. Imported binaries are stored as `ArrayBuffer` values through IndexedDB structured cloning.
 
 
-## Binary execution checkpoint
+## Execution checkpoint
 
-The Debug Console now has two explicit browser execution providers:
+The Debug Console now has three explicit browser execution providers:
 
+- `asm-source-x86-64` executes NASM-style ASM source directly with synthetic source PCs, x86-64 register/stack/data state, bounded stepping/run and a minimal Linux Lite stdio/exit syscall surface. It does not require ELF, libc or Blink.
 - `bounded-x86-64` executes fixed-address static ELF64 x86-64 directly from authoritative bytes and is kept as a small deterministic smoke/debug provider.
 - `blink-process` is the Process Sandbox for PIE and dynamically linked x86-64 Linux ELF. It materializes the complete `PT_INTERP` / `DT_NEEDED` dependency closure from **Global Dependencies**, mounts those bytes in Blink's private MEMFS, then lets Blink perform the Linux ELF/dynamic-loader work.
 
-Select an analyzed binary and use **Run → Run Active Binary (F6)** or **Step Instruction (F10)**. Neither provider executes a host program or inherits the host filesystem.
+Select an ASM source file or an analyzed binary and use **Run → Run Active Program (F6)** or **Step Instruction (F10)**. No provider executes a host program or inherits the host filesystem.
 
 Blink is vendored as pinned same-origin JS/WASM assets. Fetch the exact audited payload before the first Blink build:
 
@@ -71,7 +72,7 @@ The vendoring script pins both the browser wrapper and its Blink fork commit, ve
 
 Process execution is still sandbox work in progress: interactive stdin, VFS/syscall policy interception, runtime module/load-bias observations and graphics/window integration are not complete. A program can therefore load successfully and later fail when it asks Linux/environment services the sandbox does not yet provide.
 
-A deterministic, interaction-free execution smoke suite is available with `bun run test:execution`. It drives the bounded x86-64 session instruction-by-instruction and separately verifies paused-PC → disassembly/function/CFG follow behavior.
+A deterministic, interaction-free execution smoke suite is available with `bun run test:execution`. It drives raw ASM source through a loop + virtual `write` + `exit`, drives the bounded ELF provider instruction-by-instruction, verifies execution-trace projection onto CFG nodes/edges, and covers the Blink state/diagnostic adapters.
 
 ## Current migration boundary
 
@@ -80,3 +81,23 @@ This package establishes the new product shell and module boundaries. The old mo
 The initial ASM graph analyzer is intentionally small: it proves the new editor → analysis → Canvas graph path while the V14.x ELF/CFI/dataflow engine is moved into typed services.
 
 See [`ARCHITECTURE.md`](./ARCHITECTURE.md) for the intended module boundaries.
+
+## Headless execution
+
+Execution is not coupled to React or the browser UI. The repository exposes a headless runner and a Bun CLI for deterministic tests, scripts and CI.
+
+```bash
+# Execute NASM-style x86-64 source with the source-semantic provider + Linux Lite.
+bun run execute -- examples/headless/hello.asm
+
+# Execute a static fixed-address ELF64 x86-64 binary with vendored Capstone WASM.
+bun run execute -- ./path/to/static-program
+
+# Machine-readable result and observed trace.
+bun run execute -- ./path/to/static-program --json
+bun run execute -- examples/headless/hello.asm --trace
+```
+
+The command auto-detects ELF by magic. ASM uses `asm-source-x86-64`; static `ET_EXEC` ELF without `PT_INTERP`/`DT_NEEDED` uses `bounded-x86-64`. Dynamic ELF still selects `blink-process`, which is intentionally rejected by the headless CLI until the Blink/WASM process provider is made reliable outside the UI/browser process sandbox. This is a provider limitation, not a CLI limitation.
+
+`bun run test:headless` exercises both input paths without any UI. One smoke test runs ASM source directly; another runs a generated static ELF through the execution API. A second ELF test loads the vendored Capstone WASM in the headless runtime so the CLI path is covered without a browser.

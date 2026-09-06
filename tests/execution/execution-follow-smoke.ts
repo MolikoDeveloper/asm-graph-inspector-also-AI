@@ -71,7 +71,7 @@ const snapshot = {
   status: 'paused',
   lastInstruction: instruction(0x406828, 0x40682c),
   registers: { rip: 0x40682cn }
-} as ExecutionSnapshot;
+} as unknown as ExecutionSnapshot;
 
 assertEqual(executionAddressFromSnapshot(snapshot), 0x406828, 'paused address');
 assertEqual(graphNodeForAddress(graph, 0x40682a)?.id, 'bb-next', 'CFG block lookup');

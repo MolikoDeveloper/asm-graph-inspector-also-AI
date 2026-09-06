@@ -101,3 +101,26 @@ In this isolated environment Bun is unavailable, so the test sources were TypeSc
 - The provider must aggregate the thirteen identical warnings into one diagnostic with count 13, classify the known Emscripten `mprotect` compatibility stub as informational, capture `onAbort`, preserve the thrown WASM stack, and report the execution state as `trapped`.
 - Targeted strict TypeScript compilation of the Blink execution/provider diagnostic slice passes with the system TypeScript compiler.
 - The compiled diagnostic smoke test and existing Blink state-machine smoke test both execute successfully under Node after ESM extension normalization in this isolated QA environment.
+
+
+## Raw ASM execution + trace validation (v14)
+
+`tests/execution/raw-asm-source-smoke.ts` is interaction-free. It executes a NASM-style source program containing a counted loop, a `db` string, Linux Lite `write(1, ...)`, and `exit(0)`. Assertions cover source-line/node stepping, register evolution, virtual stdout, exit state, loop execution counts and graph-edge trace projection.
+
+The source execution core, generic execution controller and complete React/TypeScript source tree were strict-TypeScript checked in this isolated environment with temporary React/Lucide/Vite type shims only; those shims are not part of the patch. The raw ASM, bounded ELF and execution-follow smoke tests were emitted and run under Node and pass. Existing Blink state/diagnostic code remains type-checked; its previously validated runtime tests are unchanged by this slice.
+
+Manual browser QA after applying this slice:
+
+1. Open or create an `.asm` file.
+2. `Prepare`, then `Step`: the editor should reveal the executed source line and the CFG Canvas should center/highlight that instruction node.
+3. Continue stepping through a branch/loop: visited nodes should show execution counters and observed CFG edges should be emphasized.
+4. `Run` a Linux Lite hello-world style source program: stdout should appear in Debug Console and `exit(0)` should terminate without Blink, ELF, `ld-linux` or libc.
+
+## Headless execution validation (v15)
+
+- `bun run test:headless` must complete without opening a browser or mounting React.
+- `examples/headless/hello.asm` must execute through `asm-source-x86-64`, write `Hello World!\n` to virtual stdout, and exit with code 0.
+- The generated minimal static ELF fixture must parse as ELF64 x86-64 `ET_EXEC`, execute through `bounded-x86-64`, and exit with code 0 after exactly three fixture instructions.
+- The real headless Capstone smoke must instantiate `public/vendor/capstone/capstone_x86.wasm` without a DOM and execute the same ELF fixture.
+- A dynamic ELF requiring `blink-process` must fail before execution with an explicit headless-provider diagnostic. It must never be silently routed through the bounded provider.
+- `bun run execute -- <path> --json` must serialize registers as hexadecimal strings rather than leaking JavaScript `bigint` values into JSON.

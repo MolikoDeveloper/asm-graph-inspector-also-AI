@@ -40,7 +40,7 @@ export function ExecutionConsole({
     <div className="execution-console">
       <div className="execution-toolbar">
         <div className="execution-target">
-          <strong>{targetName ?? 'No executable selected'}</strong>
+          <strong>{targetName ?? 'No executable or ASM source selected'}</strong>
           <span className={`execution-status ${snapshot.status}`}>{snapshot.status}</span>
           {support?.provider ? <code>{snapshot.provider ?? support.provider}</code> : null}
           {snapshot.instructionCount ? <code>{snapshot.instructionCount.toLocaleString()} stepped insn</code> : null}
@@ -50,11 +50,11 @@ export function ExecutionConsole({
           <button type="button" disabled={!supported || running || terminal} onClick={onStep} title="Execute one machine instruction"><StepForward size={13} /> Step</button>
           <button type="button" disabled={!supported || running || terminal} onClick={onRun} title="Run in bounded browser batches"><Play size={13} /> Run</button>
           <button type="button" disabled={!running} onClick={onPause} title="Pause after the current execution batch"><Pause size={13} /> Pause</button>
-          <button type="button" disabled={!supported || running} onClick={onReset} title="Reload ELF mappings and process state"><RotateCcw size={13} /> Reset</button>
+          <button type="button" disabled={!supported || running} onClick={onReset} title="Reload execution mappings and machine state"><RotateCcw size={13} /> Reset</button>
         </div>
       </div>
 
-      {!support ? <div className="execution-empty">Open an analyzed ELF64 x86-64 binary to create an execution session.</div> : null}
+      {!support ? <div className="execution-empty">Open an ASM source file or an analyzed ELF64 x86-64 binary to create an execution session.</div> : null}
       {support && !support.supported ? (
         <div className="execution-unsupported">
           <strong>Execution refused</strong>

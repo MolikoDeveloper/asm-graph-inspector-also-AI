@@ -114,3 +114,6 @@ export function signedValue(value: bigint, bits: number): bigint {
   const sign = 1n << BigInt(bits - 1);
   return (clipped & sign) !== 0n ? clipped - (1n << BigInt(bits)) : clipped;
 }
+
+export function registerWidth(name: string): number | null { return aliases.get(name.toLowerCase())?.bits ?? null; }
+export function isRegisterName(name: string): boolean { return aliases.has(name.toLowerCase()); }

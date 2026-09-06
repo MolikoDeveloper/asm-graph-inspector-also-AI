@@ -103,3 +103,18 @@ The UI now follows paused execution instead of leaving the graph detached from t
 The first real dynamic `ray_test` browser run exposed repeated Emscripten `__syscall_mprotect` warnings followed by `Aborted(native code called abort())`. The warning itself is not sufficient evidence for the abort: Emscripten's compatibility syscall stub reports `mprotect` and returns success. The Process Sandbox therefore no longer treats browser-console noise as an implicit cause.
 
 Blink/Emscripten host diagnostics are now captured through the module `print`, `printErr`, and `onAbort` hooks and attached to immutable `ExecutionSnapshot` state. Repeated identical messages are coalesced, the caught WASM/JavaScript error stack is preserved, and Debug Console renders those diagnostics separately from guest stdout/stderr. This keeps host-emulator diagnostics, guest IO, and execution truth distinct while making the next native `abort()` actionable.
+
+
+## Raw ASM execution checkpoint (v14)
+
+ASM source files are now executable without creating an ELF image or depending on Blink. `asm-source-x86-64` compiles a small NASM-style source model into a deterministic source-PC address space, initializes x86-64 registers/stack/data memory, and executes a bounded instruction subset directly in the browser. Labels, direct calls/jumps, conditional branches, register/memory arithmetic and `syscall` are modeled. The provider is intentionally explicit that these are synthetic source PCs rather than assembler byte offsets.
+
+A small `Linux Lite` boundary virtualizes only stdin/stdout/stderr and termination (`read(0)`, `write(1/2)`, `exit`, `exit_group`). Unknown syscalls trap rather than inheriting browser/host behavior. This makes raw ASM useful before the full Linux Process Sandbox is healthy without quietly growing a second dynamic linker or libc environment.
+
+Execution rendering is now trace-driven rather than selection-only. `ExecutionEvent` instruction records can carry source line/node identity; the graph projection counts visited nodes, maps observed transitions onto static CFG edges (including short label-node paths), highlights the current node, and recenters the Canvas while stepping. Source stepping also reveals the active editor line automatically. Binary address-based follow remains intact.
+
+### v15 — execution is no longer a UI feature
+
+The execution core now has a headless API in `src/features/execution/headless/runner.ts`. ASM source and static ELF execution can be driven synchronously from tests, CI or a CLI without constructing React state, a canvas, a project workspace, or browser DOM nodes. The UI remains a consumer of execution snapshots; it is no longer required to produce them.
+
+The Bun entry point `scripts/execute.ts` auto-detects ELF magic. ASM files use the source-semantic x86-64 provider and Linux Lite. Static fixed-address ELF uses the bounded x86-64 provider plus vendored Capstone WASM loaded by `scripts/headless-capstone.ts`. Dynamic ELF is still delegated conceptually to `blink-process`; headless execution rejects it explicitly until that provider has reliable non-UI lifecycle semantics.
