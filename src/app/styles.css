@@ -42,7 +42,7 @@ button { color: inherit; }
 button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-visible { outline: 1px solid #4aa9f0; outline-offset: -1px; }
 
 .app-shell { width: 100%; height: 100%; display: grid; grid-template-rows: var(--titlebar-h) minmax(0,1fr) var(--status-h); background: var(--bg-0); }
-.titlebar { display: flex; align-items: center; gap: 14px; padding: 0 10px; border-bottom: 1px solid var(--line); background: linear-gradient(180deg, #111821 0%, #0d131a 100%); user-select: none; z-index: 50; }
+.titlebar { position: relative; display: flex; align-items: center; gap: 14px; padding: 0 10px; border-bottom: 1px solid var(--line); background: linear-gradient(180deg, #111821 0%, #0d131a 100%); user-select: none; z-index: 500; overflow: visible; }
 .brand { height: 100%; display: flex; align-items: center; gap: 8px; min-width: 248px; }
 .brand strong { font-size: 13px; letter-spacing: .01em; white-space: nowrap; }
 .brand-mark { width: 26px; height: 26px; display: grid; place-items: center; border-radius: 7px; color: #62b9f7; background: #11273a; border: 1px solid #204f73; }
@@ -481,7 +481,7 @@ button.unwind-row:hover { background: #101d26; }
 .app-body, .workbench, .workbench-main, .editor-workspace, .editor-group, .analysis-dock-shell, .analysis-dock, .graph-panel, .inspector-panel { min-width: 0; min-height: 0; }
 .titlebar { min-width: 0; }
 .brand { flex: 0 1 auto; min-width: max-content; }
-.menubar { min-width: 0; flex: 0 1 auto; overflow: hidden; }
+.menubar { min-width: max-content; flex: 0 0 auto; overflow: visible; }
 .global-search { flex: 1 1 180px; min-width: 130px; max-width: 380px; width: auto; }
 .sidebar-resizable { min-width: 150px; max-width: min(520px, 30vw); }
 .analysis-tabbar { overflow: hidden; }
