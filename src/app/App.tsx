@@ -11,6 +11,7 @@ import { useProjectController } from '../features/project/useProjectController';
 import { useGlobalDependencies } from '../features/dependencies/useGlobalDependencies';
 import { executionSupport as inspectExecutionSupport } from '../features/execution/session';
 import { useExecutionController } from '../features/execution/useExecutionController';
+import { executionAddressFromSnapshot, findBinaryFunctionForAddress, graphNodeForAddress, imageContainsExecutableAddress } from '../features/execution/follow';
 import type { ProjectFile } from '../features/project/model';
 import { initialWorkspaceState, type EditorRevealTarget } from '../features/workspace/model';
 import { workspaceReducer } from '../features/workspace/workspaceReducer';
@@ -28,6 +29,8 @@ import { ProjectGate } from '../components/ProjectGate';
 import { ResizeHandle } from '../components/ResizeHandle';
 import { SettingsDialog } from '../components/SettingsDialog';
 import { StatusBar } from '../components/StatusBar';
+
+
 
 export function App() {
   const projects = useProjectController();
@@ -56,6 +59,8 @@ export function App() {
   const sourceAnalysisTimers = useRef(new Map<string, number>());
   const binaryRequestSequence = useRef(new Map<string, number>());
   const revealSequence = useRef(0);
+  const executionFollowKey = useRef<string | null>(null);
+  const executionAnalysisKey = useRef<string | null>(null);
 
   const project = projects.project;
   const activeGroup = workspace.groups.find((group) => group.id === workspace.activeGroupId) ?? workspace.groups[0];
@@ -65,6 +70,7 @@ export function App() {
   const activeProblems = activeFile ? problemsByFile.get(activeFile.id) ?? [] : [];
   const executionTarget = useMemo(() => activeFile?.kind === 'binary' && activeBinarySummary ? { file: activeFile, image: activeBinarySummary.image } : null, [activeFile, activeBinarySummary]);
   const activeExecutionSupport = useMemo(() => executionTarget ? inspectExecutionSupport(executionTarget.image) : null, [executionTarget]);
+  const executionAddress = useMemo(() => executionAddressFromSnapshot(execution.snapshot), [execution.snapshot]);
 
   useEffect(() => { graphsRef.current = graphs; }, [graphs]);
   useEffect(() => { selectedNodeRef.current = selectedNodeId; }, [selectedNodeId]);
@@ -72,6 +78,13 @@ export function App() {
   useEffect(() => {
     if (execution.snapshot.targetFileId && execution.snapshot.targetFileId !== (activeFile?.id ?? null)) execution.clear();
   }, [activeFile?.id, execution.snapshot.targetFileId, execution.clear]);
+
+  useEffect(() => {
+    if (execution.snapshot.status === 'idle') {
+      executionFollowKey.current = null;
+      executionAnalysisKey.current = null;
+    }
+  }, [execution.snapshot.status]);
 
   const log = useCallback((message: string, level: OutputEntry['level'] = 'info') => {
     setOutput((entries) => [...entries.slice(-399), { id: makeId('log'), time: Date.now(), level, message }]);
@@ -196,6 +209,36 @@ export function App() {
       log(`Project loaded: ${project.name}`, 'success');
     }
   }, [project?.id, project, log, execution.clear]);
+
+  useEffect(() => {
+    if (!activeFile || activeFile.kind !== 'binary') return;
+    if (execution.snapshot.targetFileId !== activeFile.id) return;
+    if (executionAddress === null || !activeBinarySummary) return;
+
+    if (imageContainsExecutableAddress(activeBinarySummary, executionAddress)) {
+      const nextRevealKey = `${activeFile.id}:${executionAddress}`;
+      if (executionFollowKey.current !== nextRevealKey) {
+        executionFollowKey.current = nextRevealKey;
+        reveal(activeFile.id, { address: executionAddress });
+      }
+    }
+
+    const targetFunctionAddress = findBinaryFunctionForAddress(activeBinarySummary, executionAddress);
+    if (targetFunctionAddress !== null && targetFunctionAddress !== activeBinarySummary.rootAddress) {
+      const nextAnalysisKey = `${activeFile.id}:${targetFunctionAddress}`;
+      if (executionAnalysisKey.current !== nextAnalysisKey) {
+        executionAnalysisKey.current = nextAnalysisKey;
+        void runBinaryAnalysis(activeFile, targetFunctionAddress, false).finally(() => {
+          if (executionAnalysisKey.current === nextAnalysisKey) executionAnalysisKey.current = null;
+        });
+      }
+      return;
+    }
+
+    executionAnalysisKey.current = null;
+    const currentNode = graphNodeForAddress(activeGraph, executionAddress);
+    if (currentNode && selectedNodeRef.current !== currentNode.id) setSelectedNodeId(currentNode.id);
+  }, [activeBinarySummary, activeFile, activeGraph, execution.snapshot.targetFileId, executionAddress, reveal, runBinaryAnalysis]);
 
   useEffect(() => {
     if (!activeFile) return;
@@ -511,6 +554,7 @@ export function App() {
                 analysisStale={activeProblems.some((problem) => problem.severity === 'error')}
                 onNavigate={navigateFromNode}
                 onSelectFunction={selectBinaryFunction}
+                executionAddress={executionAddress}
               />
             ) : null}
           </div>

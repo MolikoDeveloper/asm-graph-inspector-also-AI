@@ -3,13 +3,17 @@ import type { LoadedImage } from '../binary/model';
 import { loadCapstone } from '../capstone/capstoneLoader';
 import type { ProjectFile } from '../project/model';
 import { DEFAULT_EXECUTION_POLICY, type ExecutionSnapshot } from './model';
-import { X86ExecutionSession } from './session';
+import { BlinkProcessSession } from './blinkProcessSession';
+import { executionSupport, X86ExecutionSession } from './session';
+
+type BrowserExecutionSession = X86ExecutionSession | BlinkProcessSession;
 
 const IDLE_SNAPSHOT: ExecutionSnapshot = {
   status: 'idle',
   targetFileId: null,
   targetName: null,
   imageKind: null,
+  provider: null,
   instructionCount: 0,
   registers: null,
   lastInstruction: null,
@@ -17,6 +21,7 @@ const IDLE_SNAPSHOT: ExecutionSnapshot = {
   stderr: '',
   exitCode: null,
   trapReason: null,
+  providerDiagnostics: [],
   events: []
 };
 
@@ -38,18 +43,24 @@ function nextFrame(): Promise<void> {
 
 export function useExecutionController() {
   const [snapshot, setSnapshot] = useState<ExecutionSnapshot>(IDLE_SNAPSHOT);
-  const sessionRef = useRef<X86ExecutionSession | null>(null);
+  const sessionRef = useRef<BrowserExecutionSession | null>(null);
   const runGeneration = useRef(0);
 
-  const createSession = useCallback(async (file: ProjectFile, image: LoadedImage, force = false): Promise<X86ExecutionSession | null> => {
+  const createSession = useCallback(async (file: ProjectFile, image: LoadedImage, force = false): Promise<BrowserExecutionSession | null> => {
     const current = sessionRef.current;
     if (!force && current && current.file.id === file.id && current.image.entry === image.entry) return current;
     const generation = ++runGeneration.current;
     current?.dispose();
     try {
-      const capstone = await loadCapstone();
-      if (runGeneration.current !== generation) return null;
-      const session = new X86ExecutionSession(file, image, capstone, DEFAULT_EXECUTION_POLICY);
+      const support = executionSupport(image);
+      if (!support.supported || !support.provider) throw new Error(support.reasons.join(' '));
+      const session: BrowserExecutionSession = support.provider === 'blink-process'
+        ? await BlinkProcessSession.create(file, image, DEFAULT_EXECUTION_POLICY)
+        : new X86ExecutionSession(file, image, await loadCapstone(), DEFAULT_EXECUTION_POLICY);
+      if (runGeneration.current !== generation) {
+        session.dispose();
+        return null;
+      }
       sessionRef.current = session;
       setSnapshot(session.snapshot());
       return session;
@@ -82,8 +93,7 @@ export function useExecutionController() {
     setSnapshot(session.snapshot());
 
     while (runGeneration.current === generation && session.status === 'running') {
-      for (let index = 0; index < 500 && session.status === 'running'; index += 1) session.step();
-      setSnapshot(session.snapshot());
+      setSnapshot(session.runSlice(500));
       if (session.status !== 'running') break;
       await nextFrame();
     }

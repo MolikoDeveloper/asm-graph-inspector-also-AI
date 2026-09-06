@@ -7,7 +7,9 @@
     "dev": "vite",
     "build": "tsc -b && vite build",
     "preview": "vite preview",
-    "typecheck": "tsc -b --pretty false"
+    "typecheck": "tsc -b --pretty false",
+    "vendor:blink": "bash scripts/vendor-blink.sh",
+    "test:execution": "bun tests/execution/bounded-execution-smoke.ts && bun tests/execution/execution-follow-smoke.ts && bun tests/execution/blink-process-state-smoke.ts && bun tests/execution/blink-provider-diagnostic-smoke.ts"
   },
   "dependencies": {
     "lucide-react": "^0.468.0",

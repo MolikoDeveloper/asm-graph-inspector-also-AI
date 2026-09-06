@@ -54,9 +54,24 @@ Text edits autosave after a short debounce. Imported binaries are stored as `Arr
 
 ## Binary execution checkpoint
 
-The Debug Console can now execute a deliberately bounded subset of **real static ELF64 x86-64 binaries** in the browser. Select an analyzed binary and use **Run → Run Active Binary (F6)** or **Step Instruction (F10)**. The provider maps ELF segments, maintains x86-64 registers/stack, decodes the live RIP with Capstone, and captures virtual stdout/stderr.
+The Debug Console now has two explicit browser execution providers:
 
-This is emulation, not native ELF execution. The current provider refuses PIE/dynamically linked binaries and traps on unsupported instructions/syscalls instead of fabricating behavior. Dynamic linking, broader instruction coverage and VFS/syscalls are subsequent migration slices.
+- `bounded-x86-64` executes fixed-address static ELF64 x86-64 directly from authoritative bytes and is kept as a small deterministic smoke/debug provider.
+- `blink-process` is the Process Sandbox for PIE and dynamically linked x86-64 Linux ELF. It materializes the complete `PT_INTERP` / `DT_NEEDED` dependency closure from **Global Dependencies**, mounts those bytes in Blink's private MEMFS, then lets Blink perform the Linux ELF/dynamic-loader work.
+
+Select an analyzed binary and use **Run → Run Active Binary (F6)** or **Step Instruction (F10)**. Neither provider executes a host program or inherits the host filesystem.
+
+Blink is vendored as pinned same-origin JS/WASM assets. Fetch the exact audited payload before the first Blink build:
+
+```bash
+bun run vendor:blink
+```
+
+The vendoring script pins both the browser wrapper and its Blink fork commit, verifies Git blob identities/sizes and copies the ISC license texts beside the assets.
+
+Process execution is still sandbox work in progress: interactive stdin, VFS/syscall policy interception, runtime module/load-bias observations and graphics/window integration are not complete. A program can therefore load successfully and later fail when it asks Linux/environment services the sandbox does not yet provide.
+
+A deterministic, interaction-free execution smoke suite is available with `bun run test:execution`. It drives the bounded x86-64 session instruction-by-instruction and separately verifies paused-PC → disassembly/function/CFG follow behavior.
 
 ## Current migration boundary
 

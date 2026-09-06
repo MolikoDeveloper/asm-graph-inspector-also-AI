@@ -1,4 +1,4 @@
-import { parseElfImage } from '../binary/elfParser';
+import { inspectElfRuntimeLinkage } from '../binary/elfParser';
 import { makeId } from '../../shared/id';
 import { globalDependencyStore } from './globalDependencyStore';
 import type {
@@ -14,13 +14,9 @@ function permissionForDirectory(entry: GlobalDependencyDirectory): Promise<Permi
   return entry.handle.queryPermission({ mode: 'read' }).catch(() => 'prompt');
 }
 
-function parseDependencyElf(name: string, bytes: ArrayBuffer) {
-  return parseElfImage(makeId('global-elf'), name, bytes);
-}
-
 export async function makeGlobalDependencyFile(file: File): Promise<GlobalDependencyFile> {
   const bytes = await file.arrayBuffer();
-  const soname = parseDependencyElf(file.name, bytes).soname;
+  const soname = inspectElfRuntimeLinkage(bytes).soname;
   const now = Date.now();
   return {
     schema: 'asm-graph.global-dependency/v1',

@@ -29,9 +29,12 @@
 - [x] Port the first modular Dataflow/SSA slice: register SSA values, join phi nodes, constants/copies/arithmetic, ABI call/syscall effects and Flow/Registers/Memory/Calls/Raw-SSA projections for source ASM and canonical binary instructions.
 - [ ] Complete V14.15 Dataflow parity: range-normalized memory cells, alias sets, stack-frame normalization, flags/predicates, SIMD/x87 barriers, richer unknown provenance and large-function fixed-point budgets.
 - [x] Port the first execution policy/session/provider slice: fixed-address static ELF64 x86-64, PT_LOAD virtual memory, process stack/register state, Capstone-driven stepping, bounded run loop and virtual stdin/stdout/stderr + `read`/`write`/`exit` syscalls.
+- [x] Route PIE / `PT_INTERP` / `DT_NEEDED` Process Sandbox execution to a pinned Blink/WASM provider instead of growing the bounded instruction provider into a Linux dynamic loader.
+- [x] Materialize direct + transitive `DT_NEEDED` closure from Global Dependencies without touching the host filesystem; mount the closure only inside Blink MEMFS.
+- [ ] Finish Blink interactive stdin, syscall/VFS policy interception, execution-event normalization and precise run-quantum instruction accounting.
 - [ ] Add project bundle import/export and analysis-cache persistence.
 - [ ] Move heavy ELF/Capstone/dataflow work to Web Workers.
-- [ ] Extend execution beyond the bounded first provider: PIE load bias/relocations, dynamic loader + recursive shared-library address spaces, broader x86-64 instruction semantics, signals/threads and a real VFS/syscall surface.
+- [ ] Harden Process Sandbox beyond the first Blink integration: syscall/VFS policy interception, signals/threads, runtime module/load-bias observations, breakpoints, deterministic recordings and richer process IO.
 - [ ] Restore full `ray_test` regression under the modular engine.
 
 ## UX follow-up
@@ -55,6 +58,16 @@
 - [x] Persist imported global ELF files independently of project storage.
 - [x] Persist authorized library directory handles where the browser supports File System Access API handles in IndexedDB.
 - [x] Resolve `DT_NEEDED` by exact SONAME / filename and report permission-required separately from unresolved.
-- [ ] Recursively load resolved dependency images into separate address spaces and expose cross-library symbol/call edges.
+- [x] Materialize recursive dynamic dependency bytes for Process Sandbox execution through exact filename/DT_SONAME resolution.
+- [ ] Load dependency images into separate **analysis** address spaces and expose cross-library symbol/call edges; runtime Blink loading remains observed state and must not mutate static IR.
 - [ ] Add project-local dependency overrides with precedence above global dependencies.
 - [ ] Add dependency indexing/virtualization for very large library roots instead of exact-name lookup only.
+
+## Execution follow-up after V11
+
+- [x] Route dynamic Process Sandbox Run through Blink headless `run_fast` + preemption resume instead of debugger `continue`.
+- [x] Keep headless Run register state explicitly unavailable rather than exposing stale `clstruct` pointers.
+- [x] Follow paused execution in the UI: reveal the live PC in binary disassembly, switch binary graphs to Function CFG during stepping and focus the current basic block on the canvas.
+- [ ] Extend the vendored Blink ABI with register snapshots that do not depend on its internal disassembler, then unify Step and Run without a Reset boundary.
+- [x] Capture Blink/Emscripten provider diagnostics (`print`, `printErr`, `onAbort`) in execution snapshots; aggregate repeated host warnings and preserve thrown WASM stacks instead of relying on browser DevTools.
+- [ ] Root-cause the remaining Blink/WASM native `abort()` reached by dynamically linked glibc `ray_test`; do not attribute it to `__syscall_mprotect` without independent evidence because Emscripten's compatibility stub returns success.

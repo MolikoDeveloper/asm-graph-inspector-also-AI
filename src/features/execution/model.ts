@@ -1,6 +1,7 @@
 import type { CanonicalInstruction, LoadedImage } from '../binary/model';
 
 export type ExecutionStatus = 'idle' | 'ready' | 'running' | 'paused' | 'exited' | 'halted' | 'trapped';
+export type ExecutionProviderKind = 'bounded-x86-64' | 'blink-process';
 export type ExecutionSyscallPolicy = 'none' | 'stdio-exit';
 
 export interface ExecutionPolicy {
@@ -40,6 +41,12 @@ export interface ExecutionRegisterSnapshot {
   rflags: bigint;
 }
 
+export interface ExecutionProviderDiagnostic {
+  level: 'info' | 'warning' | 'error';
+  message: string;
+  count: number;
+}
+
 export type ExecutionEvent =
   | { kind: 'prepared'; message: string }
   | { kind: 'instruction'; address: number; mnemonic: string; operands: string }
@@ -48,13 +55,15 @@ export type ExecutionEvent =
   | { kind: 'syscall'; number: number; name: string; detail: string }
   | { kind: 'exit'; code: number }
   | { kind: 'halt'; reason: string }
-  | { kind: 'trap'; reason: string };
+  | { kind: 'trap'; reason: string }
+  | { kind: 'provider-diagnostic'; level: ExecutionProviderDiagnostic['level']; message: string };
 
 export interface ExecutionSnapshot {
   status: ExecutionStatus;
   targetFileId: string | null;
   targetName: string | null;
   imageKind: LoadedImage['kind'] | null;
+  provider: ExecutionProviderKind | null;
   instructionCount: number;
   registers: ExecutionRegisterSnapshot | null;
   lastInstruction: CanonicalInstruction | null;
@@ -62,10 +71,13 @@ export interface ExecutionSnapshot {
   stderr: string;
   exitCode: number | null;
   trapReason: string | null;
+  providerDiagnostics: ExecutionProviderDiagnostic[];
   events: ExecutionEvent[];
 }
 
 export interface ExecutionSupport {
   supported: boolean;
+  provider: ExecutionProviderKind | null;
   reasons: string[];
+  notes: string[];
 }

@@ -115,3 +115,35 @@ This is an emulator boundary, not native host execution. A browser cannot direct
 `features/dependencies/` owns a browser-local dependency registry that is deliberately outside any individual `InspectorProject`. Imported ELF libraries are persisted as bytes in a dedicated IndexedDB database; authorized host library directories are persisted as File System Access API directory handles when the browser supports structured-cloning those handles. Every project resolves `DT_NEEDED` through the same registry.
 
 Resolution is evidence-first and deterministic: exact imported `DT_SONAME`, exact imported filename, then exact filename in an authorized global library root. A missing browser permission is represented separately from an unresolved dependency. The resolver never substitutes a different SONAME heuristically.
+
+
+## Migration checkpoint: Blink/WASM Process Sandbox
+
+The static `bounded-x86-64` interpreter is no longer the place where Linux process semantics grow. It remains a deterministic fixed-address ELF smoke provider. Dynamic/PIE process execution is routed through a separate `blink-process` provider, matching the original Process Sandbox contract.
+
+```text
+ProjectFile ELF bytes
+        │
+        ├── raw ELF / static analysis ───────────────→ AnalysisGraph
+        │
+        └── ExecutionSession
+              │
+              ├── static ET_EXEC ──→ bounded-x86-64
+              │
+              └── PIE/PT_INTERP/DT_NEEDED
+                       │
+                       ├── Global Dependencies
+                       │      └── exact + transitive DT_NEEDED materialization
+                       │
+                       └── Blink/WASM
+                              ├── private MEMFS /program
+                              ├── private MEMFS runtime libraries
+                              ├── Linux ELF interpreter/dynamic loader
+                              └── observed registers/stdout/stderr/stop state
+```
+
+`runtimeDependencies.ts` uses a deliberately lightweight ELF dynamic-section reader. Resolving the runtime closure must not parse all symbols, relocations, DWARF/CFI or discover functions for every copy of libc. Imported bytes and authorized directory handles are the only sources; no host library path is consulted implicitly.
+
+The Blink adapter is loaded from pinned same-origin assets under `public/vendor/blink/`. It owns process emulation only. Static analysis remains based on the inspector's own `LoadedImage`/Capstone pipeline, and runtime observations never rewrite static CFG/dataflow evidence.
+
+Pause is cooperative at Blink's browser preemption boundary: the provider simply stops scheduling the next Blink quantum. Single-step uses Blink's explicit one-instruction entry point. Exact instruction counts are currently reported only for explicit step operations; full run-quantum accounting remains pending rather than being estimated.

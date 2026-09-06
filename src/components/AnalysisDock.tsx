@@ -4,6 +4,7 @@ import type { AnalysisGraph } from '../features/analysis/model';
 import { analyzeDataflow, projectDataflow, type DataflowProjection } from '../features/analysis/dataflow';
 import { buildProgramFlow, type ProgramFlowScope } from '../features/analysis/programFlow';
 import type { BinaryAnalysisSummary } from '../features/binary/model';
+import { graphNodeForAddress } from '../features/execution/follow';
 import { BinaryModelView, type BinaryModelViewKind } from './BinaryModelView';
 import { FunctionTree } from './FunctionTree';
 import { GraphPanel } from './GraphPanel';
@@ -35,6 +36,8 @@ const DISASSEMBLY_VIEWS: Array<{ id: DisassemblyView; label: string; icon: typeo
   { id: 'unwind', label: 'Unwind', icon: MemoryStick }
 ];
 
+
+
 const DATAFLOW_PROJECTIONS: Array<{ id: DataflowProjection; label: string }> = [
   { id: 'flow', label: 'Flow' },
   { id: 'registers', label: 'Registers' },
@@ -53,7 +56,8 @@ export function AnalysisDock({
   onClearGraph,
   analysisStale = false,
   onNavigate,
-  onSelectFunction
+  onSelectFunction,
+  executionAddress = null
 }: {
   graph: AnalysisGraph | null;
   binarySummary: BinaryAnalysisSummary | null;
@@ -65,6 +69,7 @@ export function AnalysisDock({
   analysisStale?: boolean;
   onNavigate(node: { line?: number; address?: number }): void;
   onSelectFunction(address: number): void;
+  executionAddress?: number | null;
 }) {
   const [tab, setTab] = useState<AnalysisTab>('cfg');
   const [projection, setProjection] = useState<DataflowProjection>('flow');
@@ -116,6 +121,7 @@ export function AnalysisDock({
     });
   }, [binarySummary, summaryHistory, programScope, hiddenGroups, expandedGroups]);
   const cfgGraph = binarySummary && cfgView === 'program' ? programFlow?.graph ?? graph : graph;
+  const executionNodeId = useMemo(() => tab === 'cfg' && cfgView === 'function' && executionAddress !== null ? graphNodeForAddress(graph, executionAddress)?.id ?? null : null, [cfgView, executionAddress, graph, tab]);
   const graphForInspector = tab === 'dataflow' ? dataflowGraph : tab === 'cfg' ? cfgGraph : graph;
   const tabs = binarySummary ? BINARY_TABS : SOURCE_TABS;
 
@@ -125,6 +131,19 @@ export function AnalysisDock({
     if (graphForInspector.nodes.some((node) => node.id === selectedId)) return;
     onSelect(graphForInspector.nodes[0]?.id ?? null);
   }, [graphForInspector, selectedId, onSelect, tab]);
+
+
+  useEffect(() => {
+    if (!binarySummary || executionAddress === null || executionAddress === undefined) return;
+    setTab('cfg');
+    setCfgView('function');
+  }, [binarySummary, executionAddress]);
+
+  useEffect(() => {
+    if (!executionNodeId) return;
+    if (selectedId === executionNodeId) return;
+    onSelect(executionNodeId);
+  }, [executionNodeId, onSelect, selectedId]);
 
   const navigateAddress = (address: number) => onNavigate({ address });
   const selectFunction = (address: number) => {
@@ -229,7 +248,7 @@ export function AnalysisDock({
             />
           ) : null}
           <div className="analysis-dock analysis-dock-cfg" style={graphColumns}>
-            <GraphPanel graph={cfgGraph} title={binarySummary && cfgView === 'program' ? `Program flow · ${programFlow?.visitedCount ?? 0} visited` : graph?.viewKind === 'function-cfg' ? 'Function CFG' : 'Flow graph'} grid={grid} labels={labels} selectedId={selectedId} onSelect={selectNode} onActivate={activateNode} onClear={onClearGraph} />
+            <GraphPanel graph={cfgGraph} title={binarySummary && cfgView === 'program' ? `Program flow · ${programFlow?.visitedCount ?? 0} visited` : graph?.viewKind === 'function-cfg' ? 'Function CFG' : 'Flow graph'} grid={grid} labels={labels} selectedId={selectedId} focusId={executionNodeId} onSelect={selectNode} onActivate={activateNode} onClear={onClearGraph} />
             <ResizeHandle orientation="vertical" onDelta={(delta) => setInspectorWidth((width) => Math.min(520, Math.max(190, width - delta)))} />
             <InspectorPanel graph={cfgGraph} selectedId={selectedId} stale={analysisStale} onNavigate={onNavigate} />
           </div>

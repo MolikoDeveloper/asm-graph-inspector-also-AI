@@ -13,6 +13,7 @@ const ELFCLASS64 = 2;
 const ELFDATA2LSB = 1;
 const EM_X86_64 = 62;
 const PT_LOAD = 1;
+const PT_DYNAMIC = 2;
 const PT_INTERP = 3;
 const SHT_SYMTAB = 2;
 const SHT_RELA = 4;
@@ -24,6 +25,8 @@ const SHN_UNDEF = 0;
 const STT_FUNC = 2;
 const STT_GNU_IFUNC = 10;
 const DT_NEEDED = 1;
+const DT_STRTAB = 5;
+const DT_STRSZ = 10;
 const DT_SONAME = 14;
 
 function toNumber(value: bigint, field: string): number {
@@ -77,6 +80,127 @@ export function inspectElfHeader(buffer: ArrayBuffer | undefined): ElfHeaderSumm
   if (elfClass === 64 && buffer.byteLength >= 32) entry = Number(view.getBigUint64(24, littleEndian));
   else if (elfClass === 32 && buffer.byteLength >= 28) entry = view.getUint32(24, littleEndian);
   return { valid: true, elfClass, littleEndian, machine, architecture: machineArchitecture(machine), type, kind: kindForType(type), entry };
+}
+
+export interface ElfRuntimeLinkageSummary {
+  soname: string | null;
+  neededLibraries: string[];
+}
+
+/**
+ * Parse only ELF metadata needed to materialize a dynamic process image.
+ * This deliberately avoids symbols, relocations, unwind and function discovery:
+ * dependency closure resolution must not pay the full analysis cost for libc/ld.so.
+ */
+export function inspectElfRuntimeLinkage(buffer: ArrayBuffer): ElfRuntimeLinkageSummary {
+  const bytes = new Uint8Array(buffer);
+  const header = inspectElfHeader(buffer);
+  if (!header.valid) throw new Error(header.reason ?? 'Not an ELF file.');
+  if (header.elfClass !== 64 || !header.littleEndian || header.machine !== EM_X86_64) {
+    throw new Error(`Runtime dependency must be little-endian ELF64 x86-64; got ${header.architecture ?? 'unknown'}.`);
+  }
+  if (bytes.byteLength < 64) throw new Error('Truncated ELF64 header.');
+
+  const view = new DataView(buffer);
+  const phoff = toNumber(view.getBigUint64(32, true), 'program header offset');
+  const phentsize = view.getUint16(54, true);
+  const phnum = view.getUint16(56, true);
+
+  type RuntimeSegment = { type: number; offset: number; virtualAddress: number; fileSize: number };
+  const segments: RuntimeSegment[] = [];
+  if (phoff && phnum) {
+    if (phentsize < 56) throw new Error(`Unexpected ELF64 program-header size ${phentsize}.`);
+    bounded(bytes, phoff, phentsize * phnum, 'program-header table');
+    for (let index = 0; index < phnum; index += 1) {
+      const offset = phoff + index * phentsize;
+      const type = view.getUint32(offset, true);
+      const fileOffset = toNumber(view.getBigUint64(offset + 8, true), `segment ${index} file offset`);
+      const virtualAddress = toNumber(view.getBigUint64(offset + 16, true), `segment ${index} virtual address`);
+      const fileSize = toNumber(view.getBigUint64(offset + 32, true), `segment ${index} file size`);
+      if (fileSize) bounded(bytes, fileOffset, fileSize, `segment ${index}`);
+      segments.push({ type, offset: fileOffset, virtualAddress, fileSize });
+    }
+  }
+
+  const dynamicSegment = segments.find((segment) => segment.type === PT_DYNAMIC);
+  if (dynamicSegment) {
+    const entryCount = Math.floor(dynamicSegment.fileSize / 16);
+    const neededOffsets: number[] = [];
+    let sonameOffset: number | null = null;
+    let stringTableAddress: number | null = null;
+    let stringTableSize = 0;
+
+    for (let index = 0; index < entryCount; index += 1) {
+      const offset = dynamicSegment.offset + index * 16;
+      bounded(bytes, offset, 16, `PT_DYNAMIC tag ${index}`);
+      const tag = Number(view.getBigInt64(offset, true));
+      const value = toNumber(view.getBigUint64(offset + 8, true), `dynamic tag ${tag}`);
+      if (tag === 0) break;
+      if (tag === DT_NEEDED) neededOffsets.push(value);
+      else if (tag === DT_STRTAB) stringTableAddress = value;
+      else if (tag === DT_STRSZ) stringTableSize = value;
+      else if (tag === DT_SONAME) sonameOffset = value;
+    }
+
+    if (stringTableAddress !== null) {
+      const mapping = segments.find((segment) =>
+        segment.type === PT_LOAD &&
+        stringTableAddress >= segment.virtualAddress &&
+        stringTableAddress < segment.virtualAddress + segment.fileSize
+      );
+      if (!mapping) throw new Error(`ELF DT_STRTAB 0x${stringTableAddress.toString(16)} is not file-backed by PT_LOAD.`);
+      const stringTableOffset = mapping.offset + (stringTableAddress - mapping.virtualAddress);
+      const mappingEnd = mapping.offset + mapping.fileSize;
+      const stringTableEnd = stringTableSize > 0 ? Math.min(mappingEnd, stringTableOffset + stringTableSize) : mappingEnd;
+      bounded(bytes, stringTableOffset, Math.max(0, stringTableEnd - stringTableOffset), 'dynamic string table');
+      const neededLibraries = neededOffsets
+        .map((offset) => cString(bytes, stringTableOffset + offset, stringTableEnd))
+        .filter(Boolean);
+      const soname = sonameOffset === null ? null : cString(bytes, stringTableOffset + sonameOffset, stringTableEnd) || null;
+      return { soname, neededLibraries: [...new Set(neededLibraries)] };
+    }
+  }
+
+  // Fallback for unusual ELF files with section metadata but no file-backed PT_DYNAMIC.
+  const shoff = toNumber(view.getBigUint64(40, true), 'section header offset');
+  const shentsize = view.getUint16(58, true);
+  const shnum = view.getUint16(60, true);
+  if (!shoff || !shnum) return { soname: null, neededLibraries: [] };
+  if (shentsize < 64) throw new Error(`Unexpected ELF64 section-header size ${shentsize}.`);
+  bounded(bytes, shoff, shentsize * shnum, 'section-header table');
+
+  type LinkageSection = { type: number; offset: number; size: number; link: number; entrySize: number };
+  const sections: LinkageSection[] = [];
+  for (let index = 0; index < shnum; index += 1) {
+    const offset = shoff + index * shentsize;
+    const type = view.getUint32(offset + 4, true);
+    const fileOffset = toNumber(view.getBigUint64(offset + 24, true), `section ${index} offset`);
+    const size = toNumber(view.getBigUint64(offset + 32, true), `section ${index} size`);
+    const link = view.getUint32(offset + 40, true);
+    const entrySize = toNumber(view.getBigUint64(offset + 56, true), `section ${index} entry size`);
+    if (type !== 8 && size) bounded(bytes, fileOffset, size, `section ${index}`);
+    sections.push({ type, offset: fileOffset, size, link, entrySize });
+  }
+
+  const neededLibraries: string[] = [];
+  let soname: string | null = null;
+  for (const section of sections) {
+    if (section.type !== SHT_DYNAMIC) continue;
+    const stringSection = sections[section.link];
+    if (!stringSection) continue;
+    const entrySize = section.entrySize || 16;
+    const count = Math.floor(section.size / entrySize);
+    for (let index = 0; index < count; index += 1) {
+      const offset = section.offset + index * entrySize;
+      bounded(bytes, offset, 16, `dynamic tag ${index}`);
+      const tag = Number(view.getBigInt64(offset, true));
+      const value = toNumber(view.getBigUint64(offset + 8, true), `dynamic tag ${tag}`);
+      if (tag === 0) break;
+      if (tag === DT_NEEDED) neededLibraries.push(cString(bytes, stringSection.offset + value, stringSection.offset + stringSection.size));
+      if (tag === DT_SONAME) soname = cString(bytes, stringSection.offset + value, stringSection.offset + stringSection.size) || null;
+    }
+  }
+  return { soname, neededLibraries: [...new Set(neededLibraries.filter(Boolean))] };
 }
 
 function parseBuildId(bytes: Uint8Array, view: DataView, section: ElfSection): string | null {

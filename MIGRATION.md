@@ -76,3 +76,30 @@ The workbench also gained resizable Explorer, editor/analysis, analysis/inspecto
 The modular frontend now has a first `features/execution/` slice. It is not a visualization pretending to be a runtime: the provider maps authoritative ELF `PT_LOAD` bytes into sparse virtual memory, initializes x86-64 process registers/stack, decodes the instruction at the live RIP through the pinned Capstone provider, applies bounded instruction semantics, and exposes observed state to the Debug Console.
 
 The supported execution envelope is intentionally narrow: fixed-address static ELF64 x86-64. PIE, `PT_INTERP`, `DT_NEEDED`, unsupported opcodes and unsupported Linux syscalls are rejected. The virtual syscall surface currently covers stdin/stdout/stderr `read`/`write` plus `exit`/`exit_group`; no browser host filesystem or kernel syscall is invoked. This gives the next migration slices a truthful base for dynamic-loader, dependency address-space, VFS and richer CPU semantics work.
+
+
+## Process execution correction: dynamic ELF belongs to Blink
+
+The first modular execution slice proved real-byte execution with a small Capstone-driven interpreter, but extending that interpreter into `PT_INTERP`, ELF relocation, glibc, signals and Linux process semantics would duplicate an emulator/loader and diverge from the pre-existing Process Sandbox design.
+
+The migration now keeps that provider only for static fixed-address ELF and adds Blink/WASM for process images requiring Linux loader semantics. `executionSupport()` selects the provider from physical ELF evidence:
+
+- static `ET_EXEC` without interpreter/dependencies → `bounded-x86-64`;
+- PIE or any executable with `PT_INTERP` / `DT_NEEDED` → `blink-process`;
+- shared libraries/relocatables remain non-process targets.
+
+Global Dependencies are no longer merely a green resolution badge for execution. On Blink preparation the runtime resolver reads the actual bytes, follows each dependency's dynamic section recursively, rejects missing/permission-blocked entries and mounts the resulting closure into Blink's private MEMFS. The guest loader therefore sees real library bytes while the browser host filesystem remains outside the provider boundary.
+
+This slice does **not** claim that a graphical program such as a raylib application can already create a host window. Dynamic loading and CPU/process emulation are different from X11/Wayland/GPU/environment virtualization. Those services remain explicit future provider surfaces.
+
+## V11: Blink headless process Run
+
+Dynamic ELF execution now separates two Blink modes. Process `Run` uses the fork's headless `run_fast`/preemption-resume path, avoiding the internal Blink disassembler that can abort while modern glibc/ld-linux is executing. `Step` remains debugger-backed and is entered lazily. The application never reports stale register state from a headless run.
+
+The UI now follows paused execution instead of leaving the graph detached from the debugger state. When a step pauses on a main-image address, the binary disassembly editor auto-reveals the live PC, the analysis dock switches to Function CFG, and the canvas focuses the containing basic block. If execution enters a different discovered function, the analyzer re-roots on that function so the graph reflects the current local flow rather than a stale entry-only snapshot. Cross-library/runtime-module stepping is still limited by the pending multi-image analysis work; addresses outside the main image intentionally do not fake a disassembly reveal.
+
+## V13: provider diagnostics are first-class observed state
+
+The first real dynamic `ray_test` browser run exposed repeated Emscripten `__syscall_mprotect` warnings followed by `Aborted(native code called abort())`. The warning itself is not sufficient evidence for the abort: Emscripten's compatibility syscall stub reports `mprotect` and returns success. The Process Sandbox therefore no longer treats browser-console noise as an implicit cause.
+
+Blink/Emscripten host diagnostics are now captured through the module `print`, `printErr`, and `onAbort` hooks and attached to immutable `ExecutionSnapshot` state. Repeated identical messages are coalesced, the caught WASM/JavaScript error stack is preserved, and Debug Console renders those diagnostics separately from guest stdout/stderr. This keeps host-emulator diagnostics, guest IO, and execution truth distinct while making the next native `abort()` actionable.

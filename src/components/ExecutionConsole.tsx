@@ -42,7 +42,8 @@ export function ExecutionConsole({
         <div className="execution-target">
           <strong>{targetName ?? 'No executable selected'}</strong>
           <span className={`execution-status ${snapshot.status}`}>{snapshot.status}</span>
-          {snapshot.instructionCount ? <code>{snapshot.instructionCount.toLocaleString()} insn</code> : null}
+          {support?.provider ? <code>{snapshot.provider ?? support.provider}</code> : null}
+          {snapshot.instructionCount ? <code>{snapshot.instructionCount.toLocaleString()} stepped insn</code> : null}
         </div>
         <div className="execution-actions">
           <button type="button" disabled={!supported || running} onClick={onPrepare} title="Prepare/reset execution session"><RotateCcw size={13} /> Prepare</button>
@@ -64,6 +65,7 @@ export function ExecutionConsole({
 
       {supported ? (
         <div className="execution-body">
+          {support.notes.length ? <div className="execution-provider-notes">{support.notes.map((note) => <span key={note}>{note}</span>)}</div> : null}
           <section className="execution-state">
             <div className="execution-current">
               <span><b>RIP</b><code>{hex(registers?.rip)}</code></span>
@@ -71,7 +73,17 @@ export function ExecutionConsole({
               <span><b>RFLAGS</b><code>{hex(registers?.rflags)}</code></span>
               <span><b>Last</b><code>{snapshot.lastInstruction ? `${snapshot.lastInstruction.mnemonic} ${snapshot.lastInstruction.operands}`.trim() : '—'}</code></span>
             </div>
-            {registers ? <div className="execution-registers">{REGISTER_ROWS.flat().map((name) => <span key={name}><b>{name.toUpperCase()}</b><code>{hex(registers[name])}</code></span>)}</div> : <div className="execution-empty compact">Prepare the session to initialize registers and mappings.</div>}
+            {registers ? <div className="execution-registers">{REGISTER_ROWS.flat().map((name) => <span key={name}><b>{name.toUpperCase()}</b><code>{hex(registers[name])}</code></span>)}</div> : <div className="execution-empty compact">{snapshot.provider === 'blink-process' ? 'Process Run uses Blink headless compatibility mode; register snapshots are available after Reset + Step.' : 'Prepare the session to initialize registers and mappings.'}</div>}
+            {snapshot.providerDiagnostics.length ? (
+              <details className="execution-provider-diagnostics" open={terminal}>
+                <summary>Provider diagnostics · {snapshot.providerDiagnostics.reduce((total, item) => total + item.count, 0)} event(s)</summary>
+                <div>
+                  {snapshot.providerDiagnostics.map((item, index) => (
+                    <pre className={item.level} key={`${item.level}:${item.message}:${index}`}><b>{item.level}</b>{item.count > 1 ? <em>×{item.count}</em> : null}<span>{item.message}</span></pre>
+                  ))}
+                </div>
+              </details>
+            ) : null}
             {snapshot.trapReason ? <div className="execution-trap"><strong>Trap</strong><span>{snapshot.trapReason}</span></div> : null}
             {snapshot.exitCode !== null ? <div className="execution-exit">Process exited with code <code>{snapshot.exitCode}</code>.</div> : null}
           </section>

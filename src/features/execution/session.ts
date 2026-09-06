@@ -45,14 +45,24 @@ function appendEvent(events: ExecutionEvent[], event: ExecutionEvent): void {
 
 export function executionSupport(image: LoadedImage): ExecutionSupport {
   const reasons: string[] = [];
-  if (image.architecture !== 'x86-64') reasons.push(`Architecture ${image.architecture} is not supported by the execution provider.`);
-  if (image.kind !== 'executable') reasons.push(`Only fixed-address ELF executables are executable in this provider; image kind is ${image.kind}.`);
-  if (image.interpreter) reasons.push(`PT_INTERP (${image.interpreter}) requires a dynamic-loader model that is not implemented yet.`);
-  if (image.neededLibraries.length) reasons.push(`DT_NEEDED requires dynamic linking (${image.neededLibraries.join(', ')}).`);
+  const notes: string[] = [];
+  if (image.architecture !== 'x86-64') reasons.push(`Architecture ${image.architecture} is not supported by the current process providers.`);
+  if (image.kind !== 'executable' && image.kind !== 'pie-executable') {
+    reasons.push(`Process Sandbox accepts ELF executables; image kind is ${image.kind}.`);
+  }
   if (!image.segments.some((segment) => segment.executable && image.entry >= segment.virtualAddress && image.entry < segment.virtualAddress + segment.memorySize)) {
     reasons.push(`Entry point 0x${image.entry.toString(16)} is not inside an executable PT_LOAD mapping.`);
   }
-  return { supported: reasons.length === 0, reasons };
+  const dynamic = image.kind === 'pie-executable' || !!image.interpreter || image.neededLibraries.length > 0;
+  const provider = reasons.length ? null : dynamic ? 'blink-process' : 'bounded-x86-64';
+  if (provider === 'blink-process') {
+    notes.push(`Dynamic Linux process execution will use the Blink/WASM Process Sandbox.`);
+    if (image.interpreter) notes.push(`PT_INTERP ${image.interpreter} will be resolved inside the sandbox filesystem.`);
+    if (image.neededLibraries.length) notes.push(`${image.neededLibraries.length} direct DT_NEEDED entr${image.neededLibraries.length === 1 ? 'y' : 'ies'} will be materialized from Global Dependencies.`);
+  } else if (provider === 'bounded-x86-64') {
+    notes.push('Static fixed-address ELF will use the bounded instruction provider.');
+  }
+  return { supported: reasons.length === 0, provider, reasons, notes };
 }
 
 interface OperandContext {
@@ -234,12 +244,19 @@ export class X86ExecutionSession {
     if (this.statusValue === 'ready' || this.statusValue === 'paused') this.statusValue = 'running';
   }
 
+  runSlice(maxInstructions = 500): ExecutionSnapshot {
+    this.markRunning();
+    for (let index = 0; index < maxInstructions && this.statusValue === 'running'; index += 1) this.step();
+    return this.snapshot();
+  }
+
   snapshot(): ExecutionSnapshot {
     return {
       status: this.statusValue,
       targetFileId: this.file.id,
       targetName: this.file.name,
       imageKind: this.image.kind,
+      provider: 'bounded-x86-64',
       instructionCount: this.instructionCountValue,
       registers: this.registers.snapshot(),
       lastInstruction: this.lastInstructionValue,
@@ -247,6 +264,7 @@ export class X86ExecutionSession {
       stderr: this.stderrValue,
       exitCode: this.exitCodeValue,
       trapReason: this.trapReasonValue,
+      providerDiagnostics: [],
       events: this.eventsValue.slice()
     };
   }
