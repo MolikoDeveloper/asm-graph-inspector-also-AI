@@ -1,7 +1,7 @@
 import type { UnicornModule } from './unicornTypes';
 import { currentUnicornX86, loadUnicornX86 } from './unicornLoader';
 
-export type UnicornCapabilityId = 'baseline' | 'sse2' | 'avx' | 'avx2';
+export type UnicornCapabilityId = 'baseline' | 'cpuid' | 'xgetbv' | 'sse2' | 'avx' | 'avx2';
 
 export interface UnicornCapabilityProbe {
   id: UnicornCapabilityId;
@@ -20,6 +20,8 @@ export interface UnicornCapabilityReport {
 
 const PROBES: ReadonlyArray<{ id: UnicornCapabilityId; label: string; bytes: number[] }> = [
   { id: 'baseline', label: 'x86-64 baseline', bytes: [0x48, 0xc7, 0xc0, 0x2a, 0x00, 0x00, 0x00] }, // mov rax, 42
+  { id: 'cpuid', label: 'CPUID', bytes: [0x0f, 0xa2] },
+  { id: 'xgetbv', label: 'XGETBV', bytes: [0x0f, 0x01, 0xd0] }, // ECX defaults to XCR0
   { id: 'sse2', label: 'SSE2', bytes: [0x66, 0x0f, 0xef, 0xc0] }, // pxor xmm0, xmm0
   { id: 'avx', label: 'AVX', bytes: [0xc5, 0xf8, 0x57, 0xc0] }, // vxorps xmm0, xmm0, xmm0
   { id: 'avx2', label: 'AVX2', bytes: [0xc5, 0xfd, 0xef, 0xc0] } // vpxor ymm0, ymm0, ymm0
