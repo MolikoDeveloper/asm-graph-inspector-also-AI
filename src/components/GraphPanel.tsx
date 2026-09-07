@@ -10,14 +10,15 @@ interface Viewport { x: number; y: number; zoom: number; }
 const MIN_ZOOM = 0.22;
 const MAX_ZOOM = 2.8;
 const DEFAULT_VIEWPORT: Viewport = { x: 20, y: 10, zoom: 0.9 };
+const CFG_MAX_VISIBLE_INSTRUCTIONS = 6;
 
 const NODE_COLORS: Record<GraphNode['kind'], { fill: string; stroke: string }> = {
-  label: { fill: '#101d2a', stroke: '#2f88c9' },
-  instruction: { fill: '#111a24', stroke: '#45627c' },
-  branch: { fill: '#181629', stroke: '#7e6ad8' },
-  call: { fill: '#23171a', stroke: '#d06a72' },
-  syscall: { fill: '#29171b', stroke: '#ec6974' },
-  data: { fill: '#10241d', stroke: '#4bb889' }
+  label: { fill: '#0e1a25', stroke: '#355a74' },
+  instruction: { fill: '#0d1721', stroke: '#3d596f' },
+  branch: { fill: '#0d1721', stroke: '#52677a' },
+  call: { fill: '#0f1720', stroke: '#655160' },
+  syscall: { fill: '#11171f', stroke: '#74505a' },
+  data: { fill: '#0d1918', stroke: '#3d6a5a' }
 };
 
 function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, width: number, height: number, radius: number) {
@@ -62,6 +63,162 @@ function centerViewport(node: PositionedGraphNode, width: number, height: number
     x: width * 0.5 - (node.x + node.width * 0.5) * zoom,
     y: height * 0.5 - (node.y + node.height * 0.5) * zoom
   };
+}
+
+function fitText(ctx: CanvasRenderingContext2D, value: string, maxWidth: number): string {
+  if (ctx.measureText(value).width <= maxWidth) return value;
+  let text = value;
+  while (text.length > 1 && ctx.measureText(`${text}…`).width > maxWidth) text = text.slice(0, -1);
+  return `${text}…`;
+}
+
+function drawPill(ctx: CanvasRenderingContext2D, text: string, x: number, y: number, background: string, foreground: string, border: string) {
+  ctx.font = '600 10px ui-monospace, SFMono-Regular, Menlo, monospace';
+  const width = ctx.measureText(text).width + 14;
+  roundedRect(ctx, x - width / 2, y - 10, width, 20, 5);
+  ctx.fillStyle = background;
+  ctx.fill();
+  ctx.strokeStyle = border;
+  ctx.lineWidth = 1;
+  ctx.stroke();
+  ctx.fillStyle = foreground;
+  ctx.textAlign = 'center';
+  ctx.textBaseline = 'middle';
+  ctx.fillText(text, x, y);
+  ctx.textAlign = 'start';
+  ctx.textBaseline = 'alphabetic';
+}
+
+function conditionalSource(graph: AnalysisGraph, nodeId: string): boolean {
+  return graph.edges.some((edge) => edge.from === nodeId && edge.kind === 'branch')
+    && graph.edges.some((edge) => edge.from === nodeId && edge.kind === 'control' && edge.label === 'fallthrough');
+}
+
+function cfgHeaderLabel(graph: AnalysisGraph, node: PositionedGraphNode): string {
+  if (node.address === graph.functionAddress) return `<${graph.functionName ?? 'entry'}>`;
+  const base = node.title.split(' · ')[0] ?? '';
+  if (base.startsWith('block_')) return `B${base.slice('block_'.length)}`;
+  return base === 'entry' ? '<entry>' : base;
+}
+
+function drawCfgNode(
+  ctx: CanvasRenderingContext2D,
+  graph: AnalysisGraph,
+  node: PositionedGraphNode,
+  state: { selected: boolean; current: boolean; visited: boolean; executionCount: number }
+) {
+  const { selected, current, visited, executionCount } = state;
+  const palette = NODE_COLORS[node.kind];
+  const stroke = current ? '#169cff' : selected ? '#55b8ff' : visited ? '#2ac77b' : palette.stroke;
+
+  ctx.globalAlpha = node.reachable === false ? 0.42 : 1;
+  roundedRect(ctx, node.x, node.y, node.width, node.height, 7);
+  ctx.fillStyle = palette.fill;
+  ctx.fill();
+  ctx.strokeStyle = stroke;
+  ctx.lineWidth = current ? 3 : selected ? 2.2 : visited ? 1.8 : 1.2;
+  ctx.stroke();
+
+  if (current || selected) {
+    ctx.shadowColor = current ? '#0c8ee8' : '#247cb6';
+    ctx.shadowBlur = current ? 18 : 10;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  if (current) {
+    roundedRect(ctx, node.x, node.y, 4, node.height, 3);
+    ctx.fillStyle = '#20a5ff';
+    ctx.fill();
+  }
+
+  const headerBottom = node.y + 34;
+  ctx.strokeStyle = '#1b2a35';
+  ctx.lineWidth = 1;
+  ctx.beginPath();
+  ctx.moveTo(node.x + 1, headerBottom);
+  ctx.lineTo(node.x + node.width - 1, headerBottom);
+  ctx.stroke();
+
+  ctx.font = '600 12px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.fillStyle = current ? '#70c8ff' : visited ? '#61d99a' : '#c6d4df';
+  const address = node.address === undefined ? '—' : `0x${node.address.toString(16)}`;
+  ctx.fillText(address, node.x + 12, node.y + 22);
+
+  const headerLabel = cfgHeaderLabel(graph, node);
+  if (headerLabel) {
+    ctx.font = '600 11px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.fillStyle = '#8ea2b4';
+    const label = fitText(ctx, headerLabel, node.width - 105);
+    ctx.fillText(label, node.x + 94, node.y + 22);
+  }
+
+  const instructions = node.blockInstructions ?? [];
+  const shown = instructions.slice(0, CFG_MAX_VISIBLE_INSTRUCTIONS);
+  for (let index = 0; index < shown.length; index += 1) {
+    const instruction = shown[index];
+    const y = node.y + 54 + index * 17;
+    ctx.font = '600 11px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.fillStyle = instruction.controlFlow === 'jump' ? '#d49a64' : instruction.controlFlow === 'call' ? '#61b8ee' : instruction.controlFlow === 'return' ? '#bb8fe0' : '#70bff0';
+    ctx.fillText(instruction.mnemonic, node.x + 12, y);
+    const mnemonicWidth = Math.max(54, ctx.measureText(instruction.mnemonic).width + 12);
+    ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.fillStyle = '#c1cfda';
+    const operands = fitText(ctx, instruction.operands, node.width - mnemonicWidth - 24);
+    ctx.fillText(operands, node.x + 12 + mnemonicWidth, y);
+  }
+
+  if (instructions.length > CFG_MAX_VISIBLE_INSTRUCTIONS) {
+    ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.fillStyle = '#62788a';
+    ctx.fillText(`… +${instructions.length - CFG_MAX_VISIBLE_INSTRUCTIONS} instruction${instructions.length - CFG_MAX_VISIBLE_INSTRUCTIONS === 1 ? '' : 's'}`, node.x + 12, node.y + node.height - 11);
+  }
+
+  if (executionCount > 0) {
+    const badge = executionCount > 9999 ? '×9999+' : `×${executionCount}`;
+    ctx.font = '600 9px ui-monospace, SFMono-Regular, Menlo, monospace';
+    const badgeWidth = ctx.measureText(badge).width + 12;
+    roundedRect(ctx, node.x + node.width - badgeWidth - 9, node.y + 9, badgeWidth, 17, 5);
+    ctx.fillStyle = current ? '#0b4b72' : '#103929';
+    ctx.fill();
+    ctx.fillStyle = current ? '#8ed5ff' : '#80dfa8';
+    ctx.fillText(badge, node.x + node.width - badgeWidth - 3, node.y + 21);
+  }
+  ctx.globalAlpha = 1;
+}
+
+function drawCompactNode(
+  ctx: CanvasRenderingContext2D,
+  node: PositionedGraphNode,
+  state: { selected: boolean; current: boolean; visited: boolean; executionCount: number }
+) {
+  const { selected, current, visited, executionCount } = state;
+  const palette = NODE_COLORS[node.kind];
+  ctx.globalAlpha = node.reachable === false ? 0.42 : 1;
+  roundedRect(ctx, node.x, node.y, node.width, node.height, 6);
+  ctx.fillStyle = palette.fill;
+  ctx.fill();
+  ctx.strokeStyle = current ? '#169cff' : selected ? '#55b8ff' : visited ? '#2ac77b' : palette.stroke;
+  ctx.lineWidth = current ? 3 : selected ? 2.2 : visited ? 1.8 : 1.2;
+  ctx.stroke();
+  if (current || selected) {
+    ctx.shadowColor = '#0c8ee8';
+    ctx.shadowBlur = current ? 16 : 9;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+  ctx.fillStyle = '#d8e2ec';
+  ctx.font = `${node.kind === 'label' ? 600 : 500} 12px ui-monospace, SFMono-Regular, Menlo, monospace`;
+  ctx.fillText(fitText(ctx, node.title, node.width - 24), node.x + 12, node.y + 20);
+  ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.fillStyle = '#718698';
+  ctx.fillText(fitText(ctx, node.detail, node.width - 24), node.x + 12, node.y + node.height - 9);
+  if (executionCount > 0) {
+    ctx.fillStyle = current ? '#83d5ff' : '#70d69d';
+    ctx.font = '600 9px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.fillText(`×${executionCount}`, node.x + node.width - 38, node.y + 18);
+  }
+  ctx.globalAlpha = 1;
 }
 
 export function GraphPanel({
@@ -115,7 +272,7 @@ export function GraphPanel({
     if (!ctx) return;
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
-    ctx.fillStyle = '#0a0f14';
+    ctx.fillStyle = '#080e13';
     ctx.fillRect(0, 0, width, height);
 
     ctx.save();
@@ -123,7 +280,7 @@ export function GraphPanel({
     ctx.scale(viewport.zoom, viewport.zoom);
 
     if (grid) {
-      ctx.strokeStyle = '#18222d';
+      ctx.strokeStyle = '#14202a';
       ctx.lineWidth = 1 / viewport.zoom;
       const step = 24;
       const left = -viewport.x / viewport.zoom;
@@ -146,8 +303,12 @@ export function GraphPanel({
       const x2 = horizontalDataEdge ? (to.x >= from.x ? to.x : to.x + to.width) : to.x + to.width / 2;
       const y2 = horizontalDataEdge ? to.y + to.height / 2 : to.y;
       const traceCount = trace?.edgeCounts.get(edge.id) ?? 0;
-      ctx.strokeStyle = traceCount ? '#c9a84d' : edge.kind === 'call' ? '#d06a72' : edge.kind === 'branch' ? '#7e6ad8' : edge.kind === 'data' ? '#43a88a' : '#3d79a8';
-      ctx.lineWidth = traceCount ? 2.8 : edge.kind === 'control' ? 1.4 : edge.kind === 'data' ? 1.35 : 1.8;
+      const conditional = conditionalSource(graph, edge.from);
+      const trueBranch = conditional && edge.kind === 'branch';
+      const falseBranch = conditional && edge.kind === 'control' && edge.label === 'fallthrough';
+      const baseColor = trueBranch ? '#24c979' : falseBranch ? '#f05c64' : edge.kind === 'call' ? '#9270cf' : edge.kind === 'data' ? '#48ab8c' : '#6f8497';
+      ctx.strokeStyle = traceCount ? '#2ca9ff' : baseColor;
+      ctx.lineWidth = traceCount ? 3 : edge.kind === 'control' ? 1.5 : 1.8;
       ctx.beginPath();
       let labelX: number;
       let labelY: number;
@@ -158,11 +319,13 @@ export function GraphPanel({
         labelX = midX + 7;
         labelY = (y1 + y2) / 2 - 5;
       } else {
-        const midY = y1 + Math.max(18, (y2 - y1) * 0.5);
+        const direction = x2 === x1 ? 0 : Math.sign(x2 - x1);
+        const horizontalPull = Math.min(90, Math.abs(x2 - x1) * 0.36) * direction;
+        const midY = y1 + Math.max(24, (y2 - y1) * 0.48);
         ctx.moveTo(x1, y1);
-        ctx.bezierCurveTo(x1, midY, x2, midY, x2, y2);
-        labelX = (x1 + x2) / 2 + 7;
-        labelY = midY - 5;
+        ctx.bezierCurveTo(x1 + horizontalPull, midY, x2 - horizontalPull, midY, x2, y2);
+        labelX = (x1 + x2) / 2;
+        labelY = midY - 8;
       }
       ctx.stroke();
       ctx.fillStyle = ctx.strokeStyle;
@@ -171,58 +334,28 @@ export function GraphPanel({
         const direction = x2 >= x1 ? 1 : -1;
         ctx.moveTo(x2 - direction * 8, y2 - 5); ctx.lineTo(x2 - direction * 8, y2 + 5); ctx.lineTo(x2, y2); ctx.fill();
       } else {
-        ctx.moveTo(x2 - 5, y2 - 8); ctx.lineTo(x2 + 5, y2 - 8); ctx.lineTo(x2, y2); ctx.fill();
+        ctx.moveTo(x2 - 5, y2 - 9); ctx.lineTo(x2 + 5, y2 - 9); ctx.lineTo(x2, y2); ctx.fill();
       }
+
       if (labels && edge.label) {
-        ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
-        ctx.fillStyle = '#8193a6';
-        ctx.fillText(edge.label, labelX, labelY);
+        if (trueBranch) drawPill(ctx, `T · ${edge.label}`, labelX, labelY, '#0f3023', '#66e1a1', '#247a52');
+        else if (falseBranch) drawPill(ctx, 'F · fallthrough', labelX, labelY, '#34171a', '#ff9196', '#874149');
+        else {
+          ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
+          ctx.fillStyle = traceCount ? '#83d4ff' : '#73889a';
+          ctx.fillText(edge.label, labelX + 7, labelY - 1);
+        }
       }
     }
 
     for (const node of positioned) {
-      const palette = NODE_COLORS[node.kind];
       const selected = node.id === selectedId;
-      const focused = !!focusId && node.id === focusId;
-      const current = trace?.currentNodeId === node.id;
+      const current = trace?.currentNodeId === node.id || (!!focusId && node.id === focusId);
       const executionCount = trace?.nodeCounts.get(node.id) ?? 0;
-      ctx.globalAlpha = node.reachable === false ? 0.42 : 1;
-      roundedRect(ctx, node.x, node.y, node.width, node.height, 6);
-      ctx.fillStyle = palette.fill;
-      ctx.fill();
-      ctx.strokeStyle = current ? '#ffd866' : selected ? '#67b9ff' : focused ? '#f8d66d' : executionCount ? '#b99b47' : palette.stroke;
-      ctx.lineWidth = current ? 3 : selected ? 2.4 : focused || executionCount ? 2 : 1.25;
-      ctx.stroke();
-      if (selected || focused || current) {
-        ctx.shadowColor = current ? '#d3aa31' : selected ? '#2d8bd8' : '#b78a1f';
-        ctx.shadowBlur = current ? 20 : selected ? 16 : 12;
-        ctx.stroke();
-        ctx.shadowBlur = 0;
-      }
-      if (focused || current) {
-        ctx.fillStyle = current ? '#ffd866' : '#f8d66d';
-        ctx.beginPath();
-        ctx.arc(node.x + node.width - 12, node.y + 12, 4.2, 0, Math.PI * 2);
-        ctx.fill();
-      }
-      ctx.fillStyle = '#d8e2ec';
-      ctx.font = `${node.kind === 'label' ? 600 : 500} 13px ui-monospace, SFMono-Regular, Menlo, monospace`;
-      const title = node.title.length > 31 ? `${node.title.slice(0, 30)}…` : node.title;
-      ctx.fillText(title, node.x + 12, node.y + 22);
-      ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
-      ctx.fillStyle = '#74869a';
-      ctx.fillText(node.detail, node.x + 12, node.y + node.height - 10);
-      if (executionCount > 0) {
-        const badge = executionCount > 9999 ? '9999+' : `×${executionCount}`;
-        ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
-        const badgeWidth = ctx.measureText(badge).width + 10;
-        roundedRect(ctx, node.x + node.width - badgeWidth - 8, node.y + node.height - 22, badgeWidth, 16, 4);
-        ctx.fillStyle = current ? '#5c4811' : '#342d1b';
-        ctx.fill();
-        ctx.fillStyle = current ? '#ffe69a' : '#d8bd72';
-        ctx.fillText(badge, node.x + node.width - badgeWidth - 3, node.y + node.height - 10);
-      }
-      ctx.globalAlpha = 1;
+      const visited = executionCount > 0 && !current;
+      const state = { selected, current, visited, executionCount };
+      if (graph.viewKind === 'function-cfg' && node.blockInstructions?.length) drawCfgNode(ctx, graph, node, state);
+      else drawCompactNode(ctx, node, state);
     }
     ctx.restore();
   }, [focusId, graph, grid, labels, measureHost, nodeById, positioned, selectedId, trace, viewport]);
@@ -257,7 +390,7 @@ export function GraphPanel({
     const node = nodeById.get(targetId);
     const measured = measureHost();
     if (!node || !measured) return;
-    setViewport((current) => centerViewport(node, measured.width, measured.height, current.zoom));
+    setViewport((current) => centerViewport(node, measured.width, measured.height, Math.max(current.zoom, 0.72)));
   }, [focusId, measureHost, nodeById, selectedId, trace?.currentNodeId]);
 
   function screenToGraph(clientX: number, clientY: number) {
