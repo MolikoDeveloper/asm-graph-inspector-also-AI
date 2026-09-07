@@ -125,11 +125,10 @@ function loaderCodeWindow(snapshot: ExecutionSnapshot, loaderPath: string): stri
   const imageAddress = runtimeLoaderImageAddress(snapshot);
   if (imageAddress === null) return 'loader-window=<unresolved>';
   const start = Math.max(0, imageAddress - 0x30);
-  const stop = imageAddress + 0x100;
+  const stop = imageAddress + 0x600;
   try {
     const text = execFileSync('objdump', [
       '-d',
-      '--no-show-raw-insn',
       `--start-address=0x${start.toString(16)}`,
       `--stop-address=0x${stop.toString(16)}`,
       loaderPath
