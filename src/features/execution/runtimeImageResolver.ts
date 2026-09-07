@@ -163,6 +163,67 @@ export class RuntimeImageResolver {
     return this.knownBiases.get(candidateId) ?? null;
   }
 
+  /**
+   * Resolve an observed runtime address from bytes read directly from guest
+   * memory. This is used by headless fatal-signal diagnostics where Blink's
+   * internal disassembler intentionally remains disabled. A unique executable
+   * byte signature proves image identity + load bias; ambiguous signatures fail
+   * closed rather than assigning the crash to the wrong shared object.
+   */
+  resolveBytes(runtimeAddress: bigint, observedBytes: Uint8Array, minimumSignatureBytes = 6): RuntimeImageMatch | null {
+    if (runtimeAddress < 0n || observedBytes.length < minimumSignatureBytes) return null;
+
+    const cachedMatches: RuntimeImageMatch[] = [];
+    for (const candidate of this.candidates) {
+      const bias = this.knownBiases.get(candidate.id);
+      if (bias === undefined || !matchWithBias(candidate, bias, runtimeAddress, observedBytes)) continue;
+      cachedMatches.push({
+        candidateId: candidate.id,
+        name: candidate.name,
+        role: candidate.role,
+        runtimeAddress,
+        imageAddress: runtimeAddress - bias,
+        loadBias: bias,
+        confidence: bias === 0n && candidate.role === 'program' ? 'fixed-address' : 'cached-signature',
+        signatureBytes: observedBytes.length
+      });
+    }
+    if (cachedMatches.length === 1) return cachedMatches[0];
+    if (cachedMatches.length > 1) return null;
+
+    const matches: RuntimeImageMatch[] = [];
+    const identities = new Set<string>();
+    for (const candidate of this.candidates) {
+      for (const segment of candidate.segments) {
+        if (!segment.executable || segment.fileSize < observedBytes.length) continue;
+        const start = segment.offset;
+        const end = segment.offset + segment.fileSize;
+        for (const fileOffset of findSequence(candidate.bytes, start, end, observedBytes)) {
+          const imageAddress = BigInt(segment.virtualAddress + (fileOffset - segment.offset));
+          const bias = runtimeAddress - imageAddress;
+          const identity = `${candidate.id}:${bias.toString(16)}`;
+          if (identities.has(identity)) continue;
+          identities.add(identity);
+          matches.push({
+            candidateId: candidate.id,
+            name: candidate.name,
+            role: candidate.role,
+            runtimeAddress,
+            imageAddress,
+            loadBias: bias,
+            confidence: bias === 0n && candidate.role === 'program' ? 'fixed-address' : 'signature',
+            signatureBytes: observedBytes.length
+          });
+        }
+      }
+    }
+
+    if (matches.length !== 1) return null;
+    const match = matches[0];
+    this.knownBiases.set(match.candidateId, match.loadBias);
+    return match;
+  }
+
   resolve(lines: string[], rip: bigint, fallbackLine: number): RuntimeImageMatch | null {
     const instruction = instructionAtRip(lines, rip, fallbackLine);
     if (!instruction?.bytes.length) return null;
