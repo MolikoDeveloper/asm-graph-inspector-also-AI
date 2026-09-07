@@ -10,8 +10,8 @@ import {
   type BlinkIsaPreflightState
 } from './blinkIsaPreflight';
 import { publishBlinkIsaPreflight } from './blinkIsaPreflightMonitor';
-import { materializeRuntimeDependencyClosure } from './runtimeDependencies';
-import { describeRuntimeSymbolVersionFailure, validateRuntimeSymbolVersions } from './runtimeSymbolVersions';
+import { prepareBlinkRuntimeEnvironment } from './runtimeEnvironment';
+import { describeRuntimeSymbolVersionFailure } from './runtimeSymbolVersions';
 import { executionSupport, X86ExecutionSession } from './session';
 import { registerActiveExecutionInputSink } from './activeInput';
 import { registerActiveExecutionProbeSink } from './activeProbe';
@@ -155,17 +155,23 @@ export function useExecutionController() {
         });
         if (failure && !allowIncompatibleIsa) throw new Error(failure);
 
-        // Resolve the same explicit Global Dependencies contract used by the
-        // process sandbox and validate GNU symbol versions before Blink is
-        // allowed to start. This does not infer anything from the producer: the
-        // requester DT_VERNEED metadata is checked against the selected ELF
-        // provider DT_VERDEF metadata byte-for-byte.
-        const closure = await materializeRuntimeDependencyClosure(target.image.interpreter, target.image.neededLibraries);
+        // Resolve Global Dependencies once, validate the exact selected bytes,
+        // then hand the same immutable preparation evidence to Blink. This
+        // prevents compatibility and process mounting from independently
+        // walking PT_INTERP/DT_NEEDED and selecting different/stale providers.
+        const runtimeEnvironment = await prepareBlinkRuntimeEnvironment(target.file, target.image);
         if (runGeneration.current !== generation) return null;
-        const symbolVersions = validateRuntimeSymbolVersions(target.file.name, target.file.bytes!, closure);
-        if (!symbolVersions.compatible) throw new Error(describeRuntimeSymbolVersionFailure(symbolVersions));
+        if (!runtimeEnvironment.symbolVersions.compatible) {
+          throw new Error(describeRuntimeSymbolVersionFailure(runtimeEnvironment.symbolVersions));
+        }
 
-        session = await BlinkProcessSession.create(target.file, target.image, DEFAULT_EXECUTION_POLICY);
+        session = await BlinkProcessSession.create(
+          target.file,
+          target.image,
+          DEFAULT_EXECUTION_POLICY,
+          undefined,
+          runtimeEnvironment
+        );
       } else {
         setPreflight(idleBlinkIsaPreflight());
         session = new X86ExecutionSession(target.file, target.image, await loadCapstone(), DEFAULT_EXECUTION_POLICY);
