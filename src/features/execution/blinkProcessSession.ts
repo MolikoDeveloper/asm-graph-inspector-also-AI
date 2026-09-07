@@ -466,24 +466,39 @@ export class BlinkProcessSession {
     };
   }
 
+  private breakProgramTrace(reason: 'non-program-image' | 'runtime-image-unresolved'): void {
+    if (this.lastInstructionValue !== null) appendEvent(this.eventsValue, { kind: 'trace-gap', reason });
+    this.lastInstructionValue = null;
+  }
+
   private recordSteppedProgramInstruction(): void {
     if (!this.runtimeImageResolver) return;
     try {
       const registers = this.readRegisters();
       const runtime = this.readRuntimeDisassembly(registers?.rip);
-      if (!runtime) return;
+      if (!runtime) {
+        this.breakProgramTrace('runtime-image-unresolved');
+        return;
+      }
       const executed = blinkRuntimeInstructionLine(runtime.lines[runtime.currentLine] ?? '', runtime.currentLine);
-      if (!executed) return;
+      if (!executed) {
+        this.breakProgramTrace('runtime-image-unresolved');
+        return;
+      }
       const match = this.runtimeImageResolver.resolve(runtime.lines, executed.address, runtime.currentLine);
-      if (!match || match.role !== 'program') {
-        this.lastInstructionValue = null;
+      if (!match) {
+        this.breakProgramTrace('runtime-image-unresolved');
+        return;
+      }
+      if (match.role !== 'program') {
+        this.breakProgramTrace('non-program-image');
         return;
       }
       const address = Number(match.imageAddress);
       const endAddress = Number(match.imageAddress + BigInt(executed.bytes.length));
       if (!Number.isSafeInteger(address) || !Number.isSafeInteger(endAddress)) {
         this.providerDiagnostics.add('warning', `Program instruction address ${match.imageAddress.toString(16)} exceeds browser-safe analysis range.`);
-        this.lastInstructionValue = null;
+        this.breakProgramTrace('runtime-image-unresolved');
         return;
       }
       const instruction: ExecutionInstructionSnapshot = {
@@ -501,7 +516,7 @@ export class BlinkProcessSession {
       });
     } catch (error: unknown) {
       this.providerDiagnostics.add('warning', `Blink stepped-instruction projection unavailable: ${describeExecutionError(error)}`);
-      this.lastInstructionValue = null;
+      this.breakProgramTrace('runtime-image-unresolved');
     }
   }
 
