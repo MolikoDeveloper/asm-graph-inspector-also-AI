@@ -16,7 +16,7 @@ function buildStarted(message: string | undefined): boolean {
   return !!message && (message.startsWith('Preparing real ELF for ') || (message.startsWith('Assembling ') && message.includes('pinned NASM + GNU ld')));
 }
 
-export function BottomPanel({ entries, problems, onSelectProblem, execution, executionSupport, executionTargetName, onExecutionPrepare, onExecutionRun, onExecutionPause, onExecutionStep, onExecutionReset }: {
+export function BottomPanel({ entries, problems, onSelectProblem, execution, executionSupport, executionTargetName, onExecutionPrepare, onExecutionRun, onExecutionProbe, onExecutionPause, onExecutionStep, onExecutionReset }: {
   entries: OutputEntry[];
   problems: AssemblyProblem[];
   onSelectProblem(problem: AssemblyProblem): void;
@@ -25,6 +25,7 @@ export function BottomPanel({ entries, problems, onSelectProblem, execution, exe
   executionTargetName: string | null;
   onExecutionPrepare(): void;
   onExecutionRun(): void;
+  onExecutionProbe(): void;
   onExecutionPause(): void;
   onExecutionStep(): void;
   onExecutionReset(): void;
@@ -75,7 +76,7 @@ export function BottomPanel({ entries, problems, onSelectProblem, execution, exe
           )) : <div className="problems-empty"><CheckCircle2 size={14} /> No problems in the active file.</div>}
         </div>
       ) : null}
-      {tab === 'debug' ? <ExecutionConsole snapshot={execution} preflight={executionPreflight} support={executionSupport} targetName={executionTargetName} buildEntries={entries} onPrepare={onExecutionPrepare} onRun={onExecutionRun} onPause={onExecutionPause} onStep={onExecutionStep} onReset={onExecutionReset} /> : null}
+      {tab === 'debug' ? <ExecutionConsole snapshot={execution} preflight={executionPreflight} support={executionSupport} targetName={executionTargetName} buildEntries={entries} onPrepare={onExecutionPrepare} onRun={onExecutionRun} onProbe={onExecutionProbe} onPause={onExecutionPause} onStep={onExecutionStep} onReset={onExecutionReset} /> : null}
     </section>
   );
 }
