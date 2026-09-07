@@ -7,6 +7,7 @@ import {
 } from '../../src/features/execution/artifactCompatibilityReport';
 import type { ExecutionSnapshot, ExecutionSupport } from '../../src/features/execution/model';
 import type { RuntimeDependencyClosure, MaterializedRuntimeModule } from '../../src/features/execution/runtimeDependencies';
+import type { BlinkRuntimeIsaAudit } from '../../src/features/execution/runtimeIsaAudit';
 import type { RuntimeSymbolVersionValidation } from '../../src/features/execution/runtimeSymbolVersions';
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -50,6 +51,27 @@ const compatibleIsa: BlinkIsaAudit = {
   unsupportedFamilies: [],
   evidence: []
 };
+const runtimeIsa: BlinkRuntimeIsaAudit = {
+  compatible: true,
+  scannedModules: 2,
+  scannedInstructions: 200,
+  decodedBytes: 800,
+  skippedBytes: 0,
+  advisoryModuleCount: 1,
+  blockingModuleCount: 0,
+  modules: [
+    {
+      requestedName: 'ld-linux-x86-64.so.2', fileName: 'ld-linux-x86-64.so.2', soname: 'ld-linux-x86-64.so.2', role: 'interpreter',
+      scannedInstructions: 100, decodedBytes: 400, skippedBytes: 0, unsupportedFamilies: [], evidence: [], advisoryOnly: true, blockingEvidence: null
+    },
+    {
+      requestedName: 'libc.so.6', fileName: 'libc.so.6', soname: 'libc.so.6', role: 'dependency',
+      scannedInstructions: 100, decodedBytes: 400, skippedBytes: 0, unsupportedFamilies: ['avx-family'],
+      evidence: [{ family: 'avx-family', address: 0x12340, mnemonic: 'vmovups', operands: 'ymm0, ymm1', bytes: [0xc5, 0xfc, 0x10, 0xc1], sectionName: 'PT_LOAD#1' }],
+      advisoryOnly: true, blockingEvidence: null
+    }
+  ]
+};
 const loaderBytes = new ArrayBuffer(2);
 const libcBytes = new ArrayBuffer(3);
 function runtimeModule(requestedName: string, fileName: string, soname: string | null, moduleBytes: ArrayBuffer): MaterializedRuntimeModule {
@@ -74,7 +96,7 @@ const symbolVersions: RuntimeSymbolVersionValidation = {
 };
 
 const preRun = buildArtifactCompatibilityReport({
-  file, image, executionSupport: support, isaAudit: compatibleIsa,
+  file, image, executionSupport: support, isaAudit: compatibleIsa, runtimeIsa,
   runtimeClosure: closure, symbolVersions
 });
 assert(preRun.schema === ARTIFACT_COMPATIBILITY_REPORT_SCHEMA, 'report schema mismatch');
@@ -82,6 +104,8 @@ assert(preRun.compatible === null, 'pre-run report must remain incomplete while 
 assert(preRun.blockerIds.length === 0, 'pre-run compatible evidence should have no blockers');
 assert(preRun.checks.find((item) => item.id === 'elf-format')?.status === 'pass', 'ELF64 little-endian should pass');
 assert(preRun.checks.find((item) => item.id === 'architecture')?.status === 'pass', 'x86-64 should pass');
+assert(preRun.checks.find((item) => item.id === 'runtime-isa')?.status === 'pass', 'optional DSO ISA evidence must be non-blocking');
+assert(preRun.checks.find((item) => item.id === 'runtime-isa')?.evidence.some((item) => item.includes('GNU IFUNC')), 'runtime ISA report should explain dispatch-safe advisory semantics');
 assert(preRun.checks.find((item) => item.id === 'interpreter')?.status === 'pass', 'selected interpreter should pass');
 assert(preRun.checks.find((item) => item.id === 'dependency-closure')?.status === 'pass', 'resolved closure should pass');
 assert(preRun.checks.find((item) => item.id === 'symbol-versions')?.status === 'pass', 'symbol versions should pass');
@@ -92,7 +116,7 @@ const exited: ExecutionSnapshot = {
   stdout: '', stderr: '', exitCode: 7, trapReason: null, crash: null, providerDiagnostics: [], events: []
 };
 const completed = buildArtifactCompatibilityReport({
-  file, image, executionSupport: support, isaAudit: compatibleIsa,
+  file, image, executionSupport: support, isaAudit: compatibleIsa, runtimeIsa,
   runtimeClosure: closure, symbolVersions, snapshot: exited
 });
 assert(completed.compatible === true, 'clean observed provider exit should complete compatibility evidence even with an application nonzero exit');
@@ -106,11 +130,29 @@ const badIsa: BlinkIsaAudit = {
   evidence: [{ family: 'avx-family', address: 0x401020, mnemonic: 'vbroadcastss', operands: 'ymm0, [rip]', bytes: [0xc4, 0xe2, 0x7d, 0x18, 0x05], sectionName: 'PT_LOAD#2' }]
 };
 const isaBlocked = buildArtifactCompatibilityReport({
-  file, image, executionSupport: support, isaAudit: badIsa,
+  file, image, executionSupport: support, isaAudit: badIsa, runtimeIsa,
   runtimeClosure: closure, symbolVersions
 });
 assert(isaBlocked.compatible === false, 'unsupported executable ISA must block compatibility');
 assert(isaBlocked.blockerIds.includes('cpu-isa'), 'ISA blocker must be structured');
+
+const runtimeEntryEvidence = { family: 'avx-family' as const, address: 0x1a8e0, mnemonic: 'vbroadcastss', operands: 'ymm0, [rip]', bytes: [0xc4, 0xe2, 0x7d, 0x18, 0x05], sectionName: 'PT_LOAD#0 entry' };
+const runtimeBlocked: BlinkRuntimeIsaAudit = {
+  ...runtimeIsa,
+  compatible: false,
+  advisoryModuleCount: 1,
+  blockingModuleCount: 1,
+  modules: runtimeIsa.modules.map((item) => item.role === 'interpreter'
+    ? { ...item, unsupportedFamilies: ['avx-family'], evidence: [runtimeEntryEvidence], advisoryOnly: false, blockingEvidence: runtimeEntryEvidence }
+    : item)
+};
+const runtimeBlockedReport = buildArtifactCompatibilityReport({
+  file, image, executionSupport: support, isaAudit: compatibleIsa, runtimeIsa: runtimeBlocked,
+  runtimeClosure: closure, symbolVersions
+});
+assert(runtimeBlockedReport.compatible === false, 'unsupported mandatory interpreter entry must block compatibility');
+assert(runtimeBlockedReport.blockerIds.includes('runtime-isa'), 'runtime ISA blocker must be structured');
+assert(runtimeBlockedReport.checks.find((item) => item.id === 'runtime-isa')?.evidence[0]?.includes('0x1a8e0'), 'runtime ISA blocker must expose exact interpreter entry evidence');
 
 const versionBlocked: RuntimeSymbolVersionValidation = {
   compatible: false,
@@ -122,7 +164,7 @@ const versionBlocked: RuntimeSymbolVersionValidation = {
   }]
 };
 const versionReport = buildArtifactCompatibilityReport({
-  file, image, executionSupport: support, isaAudit: compatibleIsa,
+  file, image, executionSupport: support, isaAudit: compatibleIsa, runtimeIsa,
   runtimeClosure: closure, symbolVersions: versionBlocked
 });
 assert(versionReport.compatible === false, 'missing GNU symbol version must block compatibility');
@@ -142,7 +184,7 @@ const crashed: ExecutionSnapshot = {
   trapReason: 'observed SIGILL'
 };
 const crashReport = buildArtifactCompatibilityReport({
-  file, image, executionSupport: support, isaAudit: badIsa,
+  file, image, executionSupport: support, isaAudit: badIsa, runtimeIsa,
   runtimeClosure: closure, symbolVersions, snapshot: crashed
 });
 assert(crashReport.blockerIds.includes('observed-runtime'), 'observed fatal signal must be a structured blocker');
@@ -153,11 +195,11 @@ const unsupportedService: ExecutionSnapshot = {
   providerDiagnostics: [{ level: 'warning', message: 'unsupported syscall: __syscall_clone3', count: 1 }]
 };
 const serviceReport = buildArtifactCompatibilityReport({
-  file, image, executionSupport: support, isaAudit: compatibleIsa,
+  file, image, executionSupport: support, isaAudit: compatibleIsa, runtimeIsa,
   runtimeClosure: closure, symbolVersions, snapshot: unsupportedService
 });
 assert(serviceReport.compatible === false, 'observed unsupported syscall must block the report');
 assert(serviceReport.blockerIds.includes('runtime-services'), 'unsupported runtime service must be a structured blocker');
 
 assert(!JSON.stringify(completed).match(/zig|vzed|gcc|clang|rust|nasm/i), 'core compatibility report must not infer or encode producer identity');
-console.log('artifact compatibility report smoke: PASS (ELF/ISA/deps/symbol versions/runtime, producer agnostic)');
+console.log('artifact compatibility report smoke: PASS (ELF/root ISA/runtime ISA/deps/symbol versions/runtime, producer agnostic)');
