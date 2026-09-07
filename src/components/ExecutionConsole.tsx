@@ -1,5 +1,6 @@
 import { useEffect, useMemo, useRef, useState } from 'react';
 import { FastForward, Pause, Play, RotateCcw, Send, StepForward } from 'lucide-react';
+import type { BlinkIsaPreflightState } from '../features/execution/blinkIsaPreflight';
 import type { ExecutionSnapshot, ExecutionSupport } from '../features/execution/model';
 import { submitActiveExecutionInput } from '../features/execution/activeInput';
 import { deriveAssemblyBuildTelemetry, type DebugLogEntryLike } from '../features/execution/debugTelemetry';
@@ -17,6 +18,13 @@ function duration(ms: number | null): string {
   return `${(ms / 1000).toFixed(3)} s`;
 }
 
+function byteCount(bytes: number): string {
+  if (!Number.isFinite(bytes) || bytes <= 0) return '0 B';
+  if (bytes < 1024) return `${bytes} B`;
+  if (bytes < 1024 * 1024) return `${(bytes / 1024).toFixed(1)} KiB`;
+  return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
+}
+
 const REGISTER_ROWS = [
   ['rax', 'rbx', 'rcx', 'rdx'],
   ['rsi', 'rdi', 'rbp', 'rsp'],
@@ -26,6 +34,7 @@ const REGISTER_ROWS = [
 
 export function ExecutionConsole({
   snapshot,
+  preflight,
   support,
   targetName,
   buildEntries,
@@ -36,6 +45,7 @@ export function ExecutionConsole({
   onReset
 }: {
   snapshot: ExecutionSnapshot;
+  preflight: BlinkIsaPreflightState;
   support: ExecutionSupport | null;
   targetName: string | null;
   buildEntries: readonly DebugLogEntryLike[];
@@ -71,12 +81,18 @@ export function ExecutionConsole({
     const terminalText = renderVirtualTerminal(raw, { columns: 96, rows: 32 });
     return [terminalText, ...cliLines].filter(Boolean).join('\n');
   }, [cliLines, snapshot.stdout, stdoutOffset]);
+  const preflightPercent = preflight.totalBytes > 0
+    ? Math.min(100, Math.max(0, (preflight.processedBytes / preflight.totalBytes) * 100))
+    : preflight.status === 'compatible' || preflight.status === 'incompatible' ? 100 : 0;
+  const preflightLabel = preflight.status === 'idle'
+    ? 'idle'
+    : `${preflight.status}${preflight.elapsedMs !== null ? ` · ${duration(preflight.elapsedMs)}` : ''}`;
 
   useEffect(() => {
-    if (buildTelemetry.status !== 'building' && !running && !autoStepping) return;
+    if (buildTelemetry.status !== 'building' && !running && !autoStepping && preflight.status !== 'scanning') return;
     const timer = window.setInterval(() => setClock((value) => value + 1), 80);
     return () => window.clearInterval(timer);
-  }, [autoStepping, buildTelemetry.status, running]);
+  }, [autoStepping, buildTelemetry.status, preflight.status, running]);
 
   useEffect(() => {
     const key = `${snapshot.targetFileId ?? 'none'}:${snapshot.instructionCount}:${snapshot.status}`;
@@ -207,7 +223,7 @@ export function ExecutionConsole({
       case 'pause': performPause(); break;
       case 'reset': performReset(); break;
       case 'status':
-        addCliLine(`[inspector] ${snapshot.status} · ${snapshot.provider ?? 'no provider'} · ${snapshot.instructionCount.toLocaleString()} stepped instruction(s)`);
+        addCliLine(`[inspector] ${snapshot.status} · ${snapshot.provider ?? 'no provider'} · ${snapshot.instructionCount.toLocaleString()} stepped instruction(s) · ISA preflight ${preflight.status}`);
         break;
       case 'clear':
         setStdoutOffset(snapshot.stdout.length);
@@ -257,9 +273,34 @@ export function ExecutionConsole({
       {supported ? (
         <div className="execution-body">
           {support.notes.length ? <div className="execution-provider-notes">{support.notes.map((note) => <span key={note}>{note}</span>)}</div> : null}
+          {preflight.status !== 'idle' ? (
+            <section className={`execution-preflight ${preflight.status}`}>
+              <div className="execution-preflight-heading">
+                <strong>Blink ISA preflight</strong>
+                <code>{preflightLabel}</code>
+              </div>
+              <div className="execution-preflight-progress" aria-label={`Blink ISA preflight ${preflightPercent.toFixed(0)} percent`}>
+                <span style={{ width: `${preflightPercent}%` }} />
+              </div>
+              <div className="execution-preflight-stats">
+                <span>{preflight.scannedInstructions.toLocaleString()} decoded instructions</span>
+                <span>{byteCount(preflight.processedBytes)} / {byteCount(preflight.totalBytes)} executable bytes</span>
+                <span>{preflight.unsupportedFamilies.length ? `unsupported: ${preflight.unsupportedFamilies.join(', ')}` : 'no unsupported ISA evidence'}</span>
+              </div>
+              {preflight.evidence.length ? (
+                <div className="execution-preflight-evidence">
+                  {preflight.evidence.slice(0, 6).map((item, index) => (
+                    <code key={`${item.address}:${item.mnemonic}:${index}`}>0x{item.address.toString(16)} · {item.mnemonic}{item.operands ? ` ${item.operands}` : ''} · {item.family}</code>
+                  ))}
+                </div>
+              ) : null}
+              {preflight.message && preflight.status !== 'scanning' ? <p>{preflight.message}</p> : null}
+            </section>
+          ) : null}
           <section className="execution-state">
             <div className="execution-metrics">
               <span><b>ASM pipeline</b><code className={buildTelemetry.status}>{buildLabel}</code></span>
+              <span><b>Blink ISA preflight</b><code className={`preflight-${preflight.status}`}>{preflightLabel}</code></span>
               <span><b>Binary execution</b><code>{duration(liveRunElapsed)}</code></span>
               <span><b>Last Step latency</b><code>{duration(lastStepMs)}</code></span>
             </div>
