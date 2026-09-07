@@ -38,12 +38,14 @@ function probeHighRipLoaderPrologue(module: UnicornModule): { supported: boolean
   const engine = new module.Unicorn(module.ARCH_X86, module.MODE_64);
   const code = 0x0000_7f00_0001_8ef0;
   const page = 4096;
+  const alignPage = (address: number) => Math.floor(address / page) * page;
   // Never use JS bitwise alignment for 64-bit guest addresses: bitwise operators
   // coerce to signed 32-bit and silently map an unrelated low page.
-  const codePage = Math.floor(code / page) * page;
+  const codePage = alignPage(code);
   const dataPage = 0x0000_7f00_0003_7000;
   const dataAddress = 0x0000_7f00_0003_7b2c;
   const stackTop = 0x0000_7fff_ffff_ed60;
+  const stackPage = alignPage(stackTop);
   const prologue = [
     0x55,                         // push rbp
     0x48, 0x89, 0xe5,             // mov rsp, rbp
@@ -61,7 +63,7 @@ function probeHighRipLoaderPrologue(module: UnicornModule): { supported: boolean
     assert.deepEqual([...engine.mem_read(code, prologue.length)], prologue, 'high-RIP code bytes must round-trip after mapping');
     engine.mem_map(dataPage, page, module.PROT_READ | module.PROT_WRITE);
     engine.mem_write(dataAddress, [0x08, 0x00, 0x00, 0x80]);
-    engine.mem_map(stackTop - page, page, module.PROT_READ | module.PROT_WRITE);
+    engine.mem_map(stackPage, page, module.PROT_READ | module.PROT_WRITE);
     engine.reg_write_i64(module.X86_REG_RSP, BigInt(stackTop));
     engine.reg_write_i64(module.X86_REG_RBP, BigInt(stackTop));
     engine.reg_write_i64(module.X86_REG_R15, 0x1111n);
