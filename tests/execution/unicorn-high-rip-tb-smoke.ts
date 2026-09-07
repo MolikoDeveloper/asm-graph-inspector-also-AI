@@ -104,7 +104,10 @@ function probePrefix(module: UnicornModule, endImageAddress: number): { supporte
   const stackPage = Math.floor(STACK_TOP / PAGE) * PAGE;
   delete (globalThis as DiagnosticGlobal)[INVOKE_KEY];
   try {
-    engine.mem_map(codePage, PAGE, module.PROT_ALL);
+    // The real loader TB starts at page offset 0xef0 and crosses from image
+    // page 0x18000 into 0x19000. Map both pages so the probe tests Unicorn's
+    // translator rather than our harness's code write.
+    engine.mem_map(codePage, PAGE * 2, module.PROT_ALL);
     engine.mem_write(START, bytes);
     engine.mem_map(stackPage, PAGE, module.PROT_READ | module.PROT_WRITE);
     engine.reg_write_i64(module.X86_REG_RSP, BigInt(STACK_TOP));
@@ -128,6 +131,8 @@ const checkpoints = [
   0x18f89, // loads + integer ALU, before the first RIP-relative store
   0x18fbd, // adds RIP-relative stores and more global loads
   0x18fed, // adds stack-local stores and global feature-word updates
+  0x18fff, // ends one byte before the 0x19000 guest page boundary
+  0x19005, // first complete instruction whose encoding crosses the page boundary
   0x19025, // extends through additional RIP-relative read/modify/write sequences
   0x1904d  // complete initial straight-line region, immediately before first Jcc
 ] as const;
