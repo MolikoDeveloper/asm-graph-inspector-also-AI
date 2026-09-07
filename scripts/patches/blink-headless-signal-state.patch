@@ -34,7 +34,13 @@ diff --git a/blink/blinkenlib.c b/blink/blinkenlib.c
 +  cls.rdx = (u32)&m->dx;
 +
 +  if (!debugger_enabled) {
-+    cls.codemem = 0;
++    /*
++     * SpyAddress() gives JS a read-only pointer to the guest bytes at the
++     * architectural PC. This is cheap and independent from Blink's internal
++     * disassembler, and lets the inspector decode the actually faulting
++     * instruction even when RIP belongs to ld.so or a relocated dependency.
++     */
++    cls.codemem = (u32)SpyAddress(m, GetPc(m));
 +    cls.stackmem = 0;
 +    cls.readaddr = 0;
 +    cls.readsize = 0;
