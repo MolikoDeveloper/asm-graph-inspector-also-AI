@@ -147,10 +147,10 @@ export function AnalysisDock({
   const tabs = binarySummary ? BINARY_TABS : SOURCE_TABS;
 
   useEffect(() => {
-    if (tab === 'disassembly') return;
-    if (!graphForInspector) return;
-    if (selectedId && graphForInspector.nodes.some((node) => node.id === selectedId)) return;
-    onSelect(graphForInspector.nodes[0]?.id ?? null);
+    // Graphs start unselected. A stale selection from another tab/view is cleared instead of
+    // silently selecting the first node, so path illumination only appears after user inspection.
+    if (!selectedId) return;
+    if (tab === 'disassembly' || !graphForInspector || !graphForInspector.nodes.some((node) => node.id === selectedId)) onSelect(null);
   }, [graphForInspector, selectedId, onSelect, tab]);
 
   useEffect(() => {
