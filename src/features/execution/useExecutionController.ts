@@ -17,11 +17,12 @@ import {
 } from './runtimeIsaAudit';
 import { describeRuntimeSymbolVersionFailure } from './runtimeSymbolVersions';
 import { executionSupport, X86ExecutionSession } from './session';
+import { UnicornMachineSession } from './unicornMachineSession';
 import { registerActiveExecutionInputSink } from './activeInput';
 import { registerActiveExecutionProbeSink } from './activeProbe';
 import { appendExecutionStdin } from './stdinQueue';
 
-type BrowserExecutionSession = X86ExecutionSession | AsmSourceExecutionSession | BlinkProcessSession;
+type BrowserExecutionSession = X86ExecutionSession | UnicornMachineSession | AsmSourceExecutionSession | BlinkProcessSession;
 
 const IDLE_SNAPSHOT: ExecutionSnapshot = {
   status: 'idle',
@@ -43,7 +44,17 @@ const IDLE_SNAPSHOT: ExecutionSnapshot = {
 };
 
 export function executionSupportForTarget(target: ExecutionTarget): ExecutionSupport {
-  return target.kind === 'binary' ? executionSupport(target.image) : asmSourceExecutionSupport(target.file, target.source);
+  if (target.kind !== 'binary') return asmSourceExecutionSupport(target.file, target.source);
+  const support = executionSupport(target.image);
+  if (!support.supported || support.provider !== 'bounded-x86-64') return support;
+  return {
+    ...support,
+    provider: 'unicorn-machine',
+    notes: [
+      'Static fixed-address ELF will use the Unicorn/WASM x86-64 machine backend.',
+      ...support.notes.filter((note) => !note.toLowerCase().includes('bounded instruction provider'))
+    ]
+  };
 }
 
 function failedSnapshot(target: ExecutionTarget, reason: string): ExecutionSnapshot {
@@ -192,7 +203,13 @@ export function useExecutionController() {
           undefined,
           runtimeEnvironment
         );
+      } else if (support.provider === 'unicorn-machine') {
+        setPreflight(idleBlinkIsaPreflight());
+        session = await UnicornMachineSession.create(target.file, target.image, DEFAULT_EXECUTION_POLICY);
       } else {
+        // Deliberate legacy/reference fallback. Normal static browser routing
+        // selects unicorn-machine above; bounded-x86-64 remains useful to its
+        // deterministic headless regression tests.
         setPreflight(idleBlinkIsaPreflight());
         session = new X86ExecutionSession(target.file, target.image, await loadCapstone(), DEFAULT_EXECUTION_POLICY);
       }
