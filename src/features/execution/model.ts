@@ -79,6 +79,38 @@ export interface ExecutionRuntimeDisassemblySnapshot {
   image: ExecutionRuntimeImageSnapshot | null;
 }
 
+export interface ExecutionCrashInstructionSnapshot {
+  address: number;
+  endAddress: number;
+  bytes: number[];
+  mnemonic: string;
+  operands: string;
+}
+
+/**
+ * A fatal Linux guest signal observed by Blink. `runtimeAddress` and registers
+ * are captured at the signal boundary by the patched headless wrapper. Image
+ * and instruction fields are only populated when the browser can prove the
+ * mapping from authoritative bytes; unknown is preferable to a guessed module.
+ */
+export interface ExecutionCrashSnapshot {
+  signal: number;
+  signalName: string;
+  signalCode: number;
+  exitCode: number;
+  runtimeAddress: bigint | null;
+  imageName: string | null;
+  imageRole: 'program' | 'interpreter' | 'dependency' | null;
+  imageAddress: bigint | null;
+  loadBias: bigint | null;
+  functionName: string | null;
+  functionOffset: number | null;
+  codeBytes: number[];
+  instruction: ExecutionCrashInstructionSnapshot | null;
+  isaFamily: string | null;
+  evidence: 'blink-headless-signal-clstruct';
+}
+
 export type ExecutionEvent =
   | { kind: 'prepared'; message: string }
   | { kind: 'instruction'; address: number; mnemonic: string; operands: string; line?: number; nodeId?: string }
@@ -105,6 +137,8 @@ export interface ExecutionSnapshot {
   stderr: string;
   exitCode: number | null;
   trapReason: string | null;
+  /** Present on providers that can capture an observed fatal guest signal. */
+  crash?: ExecutionCrashSnapshot | null;
   providerDiagnostics: ExecutionProviderDiagnostic[];
   events: ExecutionEvent[];
 }
