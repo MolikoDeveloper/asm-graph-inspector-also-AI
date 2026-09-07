@@ -69,11 +69,13 @@ Generated NASM/GNU ld binaries are not committed. `bun run vendor:toolchain` fet
 
 ## Checkpoint 4 — project integration
 
-- [ ] Add a build model for ASM projects without coupling it to the editor UI.
-- [ ] Produce generated binary `ProjectFile` artifacts under a build namespace/path.
-- [ ] Expose Build / Assemble & Run actions for ASM source.
-- [ ] Keep generated binaries analyzable/openable exactly like imported binaries.
-- [ ] Persist only explicit project artifacts; do not silently copy host dependencies into the project.
+- [x] Add a build model for ASM projects without coupling it to the editor UI.
+- [x] Produce generated binary `ProjectFile` artifacts under a build namespace/path.
+- [x] Expose Build / Assemble & Run actions for ASM source.
+- [x] Keep generated binaries analyzable/openable exactly like imported binaries.
+- [x] Persist only explicit project artifacts; do not silently copy host dependencies into the project.
+
+Generated build files carry explicit `assembly-build` provenance (backend, source file ids, artifact kind and build timestamp) and use a stable project id/path so rebuilding replaces the same artifact rather than accumulating copies. The generated ELF is immediately routed through normal binary analysis/Capstone and may be opened, disassembled, graphed and executed like an imported binary. Global Dependencies remain external to project exports.
 
 ## Checkpoint 5 — execution unification
 
