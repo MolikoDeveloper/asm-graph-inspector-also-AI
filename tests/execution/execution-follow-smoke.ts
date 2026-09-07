@@ -82,6 +82,25 @@ assertEqual(imageContainsExecutableAddress(summary, 0x406828), true, 'main image
 assertEqual(imageContainsExecutableAddress(summary, 0x500010), false, 'non-executable address');
 assertEqual(executionAddressFromSnapshot({ ...snapshot, status: 'running' }), null, 'running snapshot must not follow');
 
+const blinkProgramSnapshot = {
+  status: 'paused',
+  provider: 'blink-process',
+  lastInstruction: null,
+  registers: { rip: 0x7f0000406828n },
+  runtimeDisassembly: {
+    image: { role: 'program', imageAddress: 0x406828n }
+  }
+} as unknown as ExecutionSnapshot;
+assertEqual(executionAddressFromSnapshot(blinkProgramSnapshot), 0x406828, 'Blink program RIP must follow canonical image address');
+assertEqual(executionAddressFromSnapshot({
+  ...blinkProgramSnapshot,
+  runtimeDisassembly: { image: { role: 'dependency', imageAddress: 0x1234n } }
+} as unknown as ExecutionSnapshot), null, 'Blink dependency RIP must not be projected into program CFG');
+assertEqual(executionAddressFromSnapshot({
+  ...blinkProgramSnapshot,
+  runtimeDisassembly: { image: null }
+} as unknown as ExecutionSnapshot), null, 'unresolved Blink RIP must fail closed for static follow');
+
 const contiguousTrace = projectExecutionTrace(graph, {
   targetFileId: graph.fileId,
   status: 'paused',
@@ -109,4 +128,4 @@ assertEqual(crossedImageTrace.nodeCounts.get('bb-entry'), 1, 'cross-image trace 
 assertEqual(crossedImageTrace.nodeCounts.get('bb-next'), 1, 'cross-image trace next count');
 assertEqual(crossedImageTrace.edgeCounts.get('e') ?? 0, 0, 'cross-image trace must not invent a skipped CFG edge');
 
-console.log('execution follow smoke: PASS (paused PC -> CFG follow + executed-only edges + runtime image gaps)');
+console.log('execution follow smoke: PASS (program-image follow + executed-only CFG edges + runtime image gaps)');
