@@ -91,6 +91,7 @@ cat > "$OUT/build-profile.json" <<JSON
     "disableJit": true,
     "nonPosixLinuxApis": true,
     "headlessSignalRegisters": true,
+    "headlessSignalCodeBytes": true,
     "configure": ["--disable-all", "--enable-x87", "--enable-mmx", "--enable-nonposix"],
     "emscripten": "$emcc_version"
   },
@@ -104,6 +105,6 @@ JSON
 printf 'Built ASM Graph Inspector Blink Process Sandbox:\n'
 printf '  source  %s\n' "$BLINK_COMMIT"
 printf '  profile %s\n' "$PROFILE"
-printf '  crash   headless signal register snapshots enabled\n'
+printf '  crash   headless signal registers + faulting code bytes enabled\n'
 printf '  JS      %s\n' "$js_sha"
 printf '  WASM    %s\n' "$wasm_sha"
