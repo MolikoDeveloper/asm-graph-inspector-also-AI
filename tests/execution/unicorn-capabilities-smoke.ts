@@ -3,13 +3,16 @@ import { createRequire } from 'node:module';
 import { mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
+import { createX86_64InstructionDecoder } from '../../src/features/capstone/capstoneDecoder';
+import type { CapstoneModule } from '../../src/features/capstone/types';
 import { probeUnicornModule } from '../../src/features/execution/unicornCapabilities';
 import type { UnicornFactory, UnicornModule } from '../../src/features/execution/unicornTypes';
+import { loadHeadlessCapstone } from '../../scripts/headless-capstone';
 
 const runtimeBytes = readFileSync(resolve('public/vendor/unicorn/unicorn_x86.js'));
 const temp = mkdtempSync(join(tmpdir(), 'asm-graph-unicorn-capabilities-'));
 
-type HighRipHookMode = 'none' | 'empty' | 'mem-read';
+type HighRipHookMode = 'none' | 'empty' | 'mem-read' | 'capstone';
 
 function probeStackWrite(module: UnicornModule, stackTop: number): { supported: boolean; error: string | null } {
   const engine = new module.Unicorn(module.ARCH_X86, module.MODE_64);
@@ -36,8 +39,13 @@ function probeStackWrite(module: UnicornModule, stackTop: number): { supported: 
   }
 }
 
-function probeHighRipLoaderPrologue(module: UnicornModule, hookMode: HighRipHookMode = 'none'): { supported: boolean; error: string | null } {
+function probeHighRipLoaderPrologue(
+  module: UnicornModule,
+  hookMode: HighRipHookMode = 'none',
+  capstone: CapstoneModule | null = null
+): { supported: boolean; error: string | null } {
   const engine = new module.Unicorn(module.ARCH_X86, module.MODE_64);
+  const decoder = hookMode === 'capstone' && capstone ? createX86_64InstructionDecoder(capstone) : null;
   const code = 0x0000_7f00_0001_8ef0;
   const page = 4096;
   const alignPage = (address: number) => Math.floor(address / page) * page;
@@ -62,7 +70,9 @@ function probeHighRipLoaderPrologue(module: UnicornModule, hookMode: HighRipHook
   let hook = null as ReturnType<typeof engine.hook_add> | null;
   let hookHits = 0;
   let hookReadBytes = 0;
+  let decodedHits = 0;
   try {
+    if (hookMode === 'capstone' && !decoder) throw new Error('Capstone module is required for the code-hook decode probe.');
     engine.mem_map(codePage, page, module.PROT_ALL);
     engine.mem_write(code, prologue);
     assert.deepEqual([...engine.mem_read(code, prologue.length)], prologue, 'high-RIP code bytes must round-trip after mapping');
@@ -79,13 +89,21 @@ function probeHighRipLoaderPrologue(module: UnicornModule, hookMode: HighRipHook
     if (hookMode !== 'none') {
       hook = engine.hook_add(module.HOOK_CODE, (...args: unknown[]) => {
         hookHits += 1;
-        if (hookMode === 'mem-read') {
+        if (hookMode === 'mem-read' || hookMode === 'capstone') {
           const addressValue = args[1];
           const sizeValue = args[2];
           const address = typeof addressValue === 'bigint' ? addressValue : BigInt(Number(addressValue));
           const size = Math.max(1, Number(sizeValue));
           const bytes = engine.mem_read(address, size);
           hookReadBytes += bytes.length;
+          if (hookMode === 'capstone') {
+            const numericAddress = Number(address);
+            assert.ok(Number.isSafeInteger(numericAddress), 'high-RIP hook address must remain a safe JS integer');
+            const decoded = decoder!.decodeOne(bytes, numericAddress);
+            assert.ok(decoded, `Capstone must decode UC_HOOK_CODE bytes at 0x${address.toString(16)}`);
+            assert.equal(decoded.address, numericAddress);
+            decodedHits += 1;
+          }
         }
       });
     }
@@ -93,7 +111,8 @@ function probeHighRipLoaderPrologue(module: UnicornModule, hookMode: HighRipHook
     assert.equal(engine.reg_read_i64(module.X86_REG_RDI), 0x80000008n, 'high-RIP RIP-relative load must preserve the 32-bit feature word');
     assert.equal(engine.reg_read_i64(module.X86_REG_RSP), BigInt(stackTop - 5 * 8 - 0xb0 - 8), 'loader prologue stack shape must match x86-64 pushes');
     if (hookMode !== 'none') assert.ok(hookHits > 0, 'UC_HOOK_CODE must observe the high-RIP loader prologue');
-    if (hookMode === 'mem-read') assert.ok(hookReadBytes >= hookHits, 'UC_HOOK_CODE reentrant mem_read must return instruction bytes for every callback');
+    if (hookMode === 'mem-read' || hookMode === 'capstone') assert.ok(hookReadBytes >= hookHits, 'UC_HOOK_CODE reentrant mem_read must return instruction bytes for every callback');
+    if (hookMode === 'capstone') assert.equal(decodedHits, hookHits, 'Capstone must decode every high-RIP UC_HOOK_CODE callback');
     return { supported: true, error: null };
   } catch (cause) {
     let detail = cause instanceof Error ? cause.message : String(cause);
@@ -103,6 +122,7 @@ function probeHighRipLoaderPrologue(module: UnicornModule, hookMode: HighRipHook
     if (hook) {
       try { engine.hook_del(hook); } catch { /* engine may already be terminal */ }
     }
+    decoder?.close();
     engine.close();
   }
 }
@@ -165,7 +185,7 @@ try {
   const runtime = join(temp, 'unicorn_x86.cjs');
   writeFileSync(runtime, runtimeBytes);
   const factory = createRequire(import.meta.url)(runtime) as UnicornFactory;
-  const module = await factory();
+  const [module, capstone] = await Promise.all([factory(), loadHeadlessCapstone()]);
   const report = probeUnicornModule(module);
 
   assert.equal(report.architecture, 'x86-64');
@@ -184,6 +204,7 @@ try {
   const highRipLoader = probeHighRipLoaderPrologue(module);
   const highRipCodeHook = probeHighRipLoaderPrologue(module, 'empty');
   const highRipCodeHookRead = probeHighRipLoaderPrologue(module, 'mem-read');
+  const highRipCodeHookCapstone = probeHighRipLoaderPrologue(module, 'capstone', capstone);
   const helperAdapter = probeHelperAdapter(module);
   const syscallHook = probeSyscallInsnHook(module);
   assert.equal(lowStack.supported, true, `low-address x86 stack must work: ${lowStack.error ?? ''}`);
@@ -191,11 +212,12 @@ try {
   assert.equal(highRipLoader.supported, true, `high-RIP loader prologue must work: ${highRipLoader.error ?? ''}`);
   assert.equal(highRipCodeHook.supported, true, `high-RIP loader prologue with empty UC_HOOK_CODE must work: ${highRipCodeHook.error ?? ''}`);
   assert.equal(highRipCodeHookRead.supported, true, `high-RIP loader UC_HOOK_CODE mem_read must work: ${highRipCodeHookRead.error ?? ''}`);
+  assert.equal(highRipCodeHookCapstone.supported, true, `high-RIP loader UC_HOOK_CODE Capstone decode must work: ${highRipCodeHookCapstone.error ?? ''}`);
   assert.equal(helperAdapter.supported, true, `TCG helper adapter path must work: ${helperAdapter.error ?? ''}`);
   assert.equal(syscallHook.supported, true, `UC_HOOK_INSN syscall interception must work: ${syscallHook.error ?? ''}`);
 
   const summary = report.probes.map((probe) => `${probe.id}=${probe.supported ? 'yes' : 'no'}`).join(' ');
-  console.log(`Unicorn capability smoke: PASS · ${summary} low-stack=yes high-stack=yes high-rip-loader=yes high-rip-code-hook=yes high-rip-code-hook-read=yes helper-adapter=yes syscall-hook=yes`);
+  console.log(`Unicorn capability smoke: PASS · ${summary} low-stack=yes high-stack=yes high-rip-loader=yes high-rip-code-hook=yes high-rip-code-hook-read=yes high-rip-code-hook-capstone=yes helper-adapter=yes syscall-hook=yes`);
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }
