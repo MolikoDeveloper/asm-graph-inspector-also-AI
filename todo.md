@@ -36,12 +36,12 @@ real ELF/object/flat bytes
 
 ## Checkpoint 1 — toolchain abstraction
 
-- [ ] Add a typed `toolchain` feature boundary independent from React and execution providers.
-- [ ] Define `AssemblerBackend`, assembly request/result, diagnostics and generated-artifact contracts.
-- [ ] Define a generic isolated tool-process runner contract so assembler backends do not depend directly on Blink internals.
-- [ ] Add a deterministic NASM + GNU ld backend orchestration layer using the generic runner contract.
-- [ ] Add zero-UI smoke coverage for command construction, multi-source object naming and final artifact retrieval.
-- [ ] Add the toolchain smoke suite to CI.
+- [x] Add a typed `toolchain` feature boundary independent from React and execution providers.
+- [x] Define `AssemblerBackend`, assembly request/result, diagnostics and generated-artifact contracts.
+- [x] Define a generic isolated tool-process runner contract so assembler backends do not depend directly on Blink internals.
+- [x] Add a deterministic NASM + GNU ld backend orchestration layer using the generic runner contract.
+- [x] Add zero-UI smoke coverage for command construction, multi-source object naming and final artifact retrieval.
+- [x] Add the toolchain smoke suite to CI.
 
 ## Checkpoint 2 — Blink tool runner
 
