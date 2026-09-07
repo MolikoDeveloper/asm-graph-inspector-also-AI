@@ -22,6 +22,10 @@ function runTool(executable: string, args: string[]): void {
   }
 }
 
+function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
+  return Uint8Array.from(bytes).buffer;
+}
+
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../..');
 const nasmPath = resolve(root, 'public/vendor/toolchain/nasm.3.00.elf');
@@ -39,18 +43,14 @@ try {
   const executablePath = resolve(work, 'hello');
 
   runTool(nasmPath, ['-f', 'elf64', sourcePath, '-o', objectPath]);
-  const objectBuffer = (await readFile(objectPath)).buffer;
+  const objectBuffer = exactArrayBuffer(new Uint8Array(await readFile(objectPath)));
   const objectHeader = inspectElfHeader(objectBuffer);
   assert(objectHeader.valid, 'NASM output must be a valid ELF');
   assert(objectHeader.architecture === 'x86-64', `NASM object must be x86-64, got ${objectHeader.architecture}`);
   assert(objectHeader.kind === 'relocatable', `NASM must produce ET_REL, got ${objectHeader.kind}`);
 
   runTool(ldPath, ['-o', executablePath, '-e', '_start', objectPath]);
-  const executableBytes = new Uint8Array(await readFile(executablePath));
-  const executableBuffer = executableBytes.buffer.slice(
-    executableBytes.byteOffset,
-    executableBytes.byteOffset + executableBytes.byteLength
-  );
+  const executableBuffer = exactArrayBuffer(new Uint8Array(await readFile(executablePath)));
   const executableHeader = inspectElfHeader(executableBuffer);
   assert(executableHeader.valid, 'GNU ld output must be a valid ELF');
   assert(executableHeader.architecture === 'x86-64', `linked ELF must be x86-64, got ${executableHeader.architecture}`);
