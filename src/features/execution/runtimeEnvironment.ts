@@ -5,6 +5,10 @@ import {
   type RuntimeDependencyClosure
 } from './runtimeDependencies';
 import {
+  auditBlinkRuntimeDependencyIsa,
+  type BlinkRuntimeIsaAudit
+} from './runtimeIsaAudit';
+import {
   validateRuntimeSymbolVersions,
   type RuntimeSymbolVersionValidation
 } from './runtimeSymbolVersions';
@@ -21,6 +25,7 @@ export interface PreparedBlinkRuntimeEnvironment {
   directNeeded: string[];
   closure: RuntimeDependencyClosure;
   symbolVersions: RuntimeSymbolVersionValidation;
+  runtimeIsa: BlinkRuntimeIsaAudit;
 }
 
 export interface BlinkRuntimeEnvironmentPreparationDependencies {
@@ -33,6 +38,9 @@ export interface BlinkRuntimeEnvironmentPreparationDependencies {
     rootBytes: ArrayBuffer,
     closure: RuntimeDependencyClosure
   ) => RuntimeSymbolVersionValidation;
+  auditRuntimeIsa?: (
+    closure: RuntimeDependencyClosure
+  ) => Promise<BlinkRuntimeIsaAudit>;
 }
 
 function sameStrings(left: readonly string[], right: readonly string[]): boolean {
@@ -44,6 +52,11 @@ function sameStrings(left: readonly string[], right: readonly string[]): boolean
  * object is the shared evidence/mount contract for compatibility validation and
  * Blink process initialization; callers must not independently rematerialize
  * Global Dependencies for the same launch.
+ *
+ * Runtime dependency ISA is inventoried from the same exact module bytes. That
+ * audit is dispatch-aware: whole-image AVX/etc. inside DSOs is advisory because
+ * glibc/multiarch/IFUNC can keep optional implementations dormant, while an
+ * unsupported instruction exactly at the mandatory PT_INTERP entry is blocking.
  */
 export async function prepareBlinkRuntimeEnvironment(
   file: ProjectFile,
@@ -56,9 +69,11 @@ export async function prepareBlinkRuntimeEnvironment(
 
   const materialize = dependencies.materialize ?? materializeRuntimeDependencyClosure;
   const validateSymbolVersions = dependencies.validateSymbolVersions ?? validateRuntimeSymbolVersions;
+  const auditRuntimeIsa = dependencies.auditRuntimeIsa ?? auditBlinkRuntimeDependencyIsa;
   const directNeeded = image.neededLibraries.slice();
   const closure = await materialize(image.interpreter, directNeeded);
   const symbolVersions = validateSymbolVersions(file.name, file.bytes, closure);
+  const runtimeIsa = await auditRuntimeIsa(closure);
 
   return {
     schema: BLINK_RUNTIME_ENVIRONMENT_SCHEMA,
@@ -69,14 +84,16 @@ export async function prepareBlinkRuntimeEnvironment(
     interpreterPath: image.interpreter,
     directNeeded,
     closure,
-    symbolVersions
+    symbolVersions,
+    runtimeIsa
   };
 }
 
 /**
  * Fail closed if a prepared environment is accidentally reused after the
  * binary or its dynamic-link contract changed. This protects symbol-version
- * evidence and the exact selected Global Dependency bytes from going stale.
+ * and runtime-ISA evidence plus the exact selected Global Dependency bytes from
+ * going stale.
  */
 export function assertPreparedBlinkRuntimeEnvironmentMatches(
   file: ProjectFile,
