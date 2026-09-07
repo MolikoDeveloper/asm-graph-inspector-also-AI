@@ -30,6 +30,7 @@ const IDLE_SNAPSHOT: ExecutionSnapshot = {
   stderr: '',
   exitCode: null,
   trapReason: null,
+  crash: null,
   providerDiagnostics: [],
   events: []
 };
@@ -79,7 +80,11 @@ export function useExecutionController() {
     return appended;
   }), []);
 
-  const createSession = useCallback(async (target: ExecutionTarget, force = false): Promise<BrowserExecutionSession | null> => {
+  const createSession = useCallback(async (
+    target: ExecutionTarget,
+    force = false,
+    allowIncompatibleIsa = false
+  ): Promise<BrowserExecutionSession | null> => {
     const current = sessionRef.current;
     if (!force && current && sameTarget(current, target)) return current;
     const generation = ++runGeneration.current;
@@ -128,6 +133,9 @@ export function useExecutionController() {
         isaAuditFinished = true;
         const elapsedMs = Math.max(0, performance.now() - isaAuditStartedAt);
         const failure = isaAudit.compatible ? null : describeBlinkIsaAuditFailure(target.file.name, isaAudit);
+        const diagnosticSuffix = failure && allowIncompatibleIsa
+          ? ' Diagnostic probe explicitly requested: compatibility remains failed, but Blink will run in the sandbox so an observed signal/RIP can be captured if the guest reaches the unsupported path.'
+          : '';
         setPreflight({
           status: isaAudit.compatible ? 'compatible' : 'incompatible',
           targetFileId: target.file.id,
@@ -138,9 +146,9 @@ export function useExecutionController() {
           totalBytes: isaAudit.decodedBytes + isaAudit.skippedBytes,
           unsupportedFamilies: isaAudit.unsupportedFamilies,
           evidence: isaAudit.evidence,
-          message: failure
+          message: failure ? `${failure}${diagnosticSuffix}` : null
         });
-        if (failure) throw new Error(failure);
+        if (failure && !allowIncompatibleIsa) throw new Error(failure);
         session = await BlinkProcessSession.create(target.file, target.image, DEFAULT_EXECUTION_POLICY);
       } else {
         setPreflight(idleBlinkIsaPreflight());
@@ -184,9 +192,7 @@ export function useExecutionController() {
     setSnapshot(session.step());
   }, [createSession]);
 
-  const run = useCallback(async (target: ExecutionTarget) => {
-    const session = await createSession(target, false);
-    if (!session) return;
+  const driveRun = useCallback(async (session: BrowserExecutionSession) => {
     if (session.status === 'exited' || session.status === 'halted' || session.status === 'trapped') return;
     const generation = ++runGeneration.current;
     session.markRunning();
@@ -197,7 +203,33 @@ export function useExecutionController() {
       if (session.status !== 'running') break;
       await nextFrame();
     }
-  }, [createSession]);
+  }, []);
+
+  const run = useCallback(async (target: ExecutionTarget) => {
+    const session = await createSession(target, false);
+    if (!session) return;
+    await driveRun(session);
+  }, [createSession, driveRun]);
+
+  /**
+   * Explicit diagnostic escape hatch for an ELF already proven incompatible by
+   * static ISA preflight. Normal Run remains fail-closed; Probe exists solely to
+   * capture the actually observed guest signal/RIP/instruction inside Blink.
+   */
+  const probe = useCallback(async (target: ExecutionTarget) => {
+    if (target.kind !== 'binary') {
+      setSnapshot(failedSnapshot(target, 'Diagnostic Probe requires an analyzed binary target.'));
+      return;
+    }
+    const support = executionSupportForTarget(target);
+    if (support.provider !== 'blink-process') {
+      setSnapshot(failedSnapshot(target, 'Diagnostic Probe is only available for blink-process targets.'));
+      return;
+    }
+    const session = await createSession(target, true, true);
+    if (!session) return;
+    await driveRun(session);
+  }, [createSession, driveRun]);
 
   const pause = useCallback(() => {
     runGeneration.current += 1;
@@ -219,5 +251,5 @@ export function useExecutionController() {
     setPreflight(idleBlinkIsaPreflight());
   }, []);
 
-  return { snapshot, preflight, prepare, step, run, pause, reset, clear };
+  return { snapshot, preflight, prepare, step, run, probe, pause, reset, clear };
 }
