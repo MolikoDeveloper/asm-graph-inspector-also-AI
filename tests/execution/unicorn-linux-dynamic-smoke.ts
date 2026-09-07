@@ -10,7 +10,7 @@ import { prepareLinuxRuntimeEnvironment } from '../../src/features/execution/lin
 import type { MaterializedRuntimeModule, RuntimeDependencyClosure } from '../../src/features/execution/runtimeDependencies';
 import { UnicornLinuxProcessSession } from '../../src/features/execution/unicornLinuxProcessSession';
 import type { UnicornFactory } from '../../src/features/execution/unicornTypes';
-import type { ExecutionPolicy } from '../../src/features/execution/model';
+import type { ExecutionPolicy, ExecutionSnapshot } from '../../src/features/execution/model';
 import { loadHeadlessCapstone } from '../../scripts/headless-capstone';
 
 function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
@@ -36,6 +36,22 @@ function materialized(requestedName: string, path: string): MaterializedRuntimeM
     sourceKind: 'file',
     sourceName: requestedName
   };
+}
+
+function failureContext(snapshot: ExecutionSnapshot): string {
+  const instruction = snapshot.lastInstruction
+    ? `last=0x${snapshot.lastInstruction.address.toString(16)} ${snapshot.lastInstruction.mnemonic}${snapshot.lastInstruction.operands ? ` ${snapshot.lastInstruction.operands}` : ''}`
+    : 'last=<none>';
+  const runtime = snapshot.runtimeDisassembly?.image
+    ? `runtime=${snapshot.runtimeDisassembly.image.role}:${snapshot.runtimeDisassembly.image.name} rip=0x${snapshot.runtimeDisassembly.image.runtimeAddress.toString(16)} image=0x${snapshot.runtimeDisassembly.image.imageAddress.toString(16)}`
+    : 'runtime=<unresolved>';
+  const syscalls = snapshot.events
+    .filter((event) => event.kind === 'syscall')
+    .slice(-12)
+    .map((event) => event.kind === 'syscall' ? `${event.name}(${event.detail})` : '')
+    .join(' <- ');
+  const diagnostics = snapshot.providerDiagnostics.slice(-3).map((entry) => entry.message).join(' | ');
+  return [snapshot.trapReason ?? 'dynamic Unicorn session did not exit', instruction, runtime, `instructions=${snapshot.instructionCount}`, `recent-syscalls=${syscalls || '<none>'}`, `provider=${diagnostics || '<none>'}`].join(' ; ');
 }
 
 const temp = mkdtempSync(join(tmpdir(), 'asm-graph-unicorn-linux-'));
@@ -101,7 +117,7 @@ try {
       snapshot = session.runSlice(500);
       if (snapshot.status === 'exited' || snapshot.status === 'trapped' || snapshot.status === 'halted') break;
     }
-    assert.equal(snapshot.status, 'exited', snapshot.trapReason ?? 'dynamic Unicorn session did not exit');
+    assert.equal(snapshot.status, 'exited', failureContext(snapshot));
     assert.equal(snapshot.exitCode, 0);
     assert.match(snapshot.stdout, /hello from unicorn dynamic glibc/);
     assert.ok(snapshot.events.some((event) => event.kind === 'trace-gap'), 'dynamic startup must cross loader/dependency execution boundaries');
