@@ -32,7 +32,7 @@ function objectPath(source: AssemblySourceFile, index: number): string {
 }
 
 function sourcePath(source: AssemblySourceFile, index: number): string {
-  return `/work/src/${String(index).padStart(3, '0')}-${basename(source.path)}`;
+  return `/work/src/${String(index).padStart(3, '0')}-${safeStem(source.path)}.asm`;
 }
 
 function diagnosticFromProcess(tool: string, result: ToolProcessResult): AssemblyDiagnostic[] {
