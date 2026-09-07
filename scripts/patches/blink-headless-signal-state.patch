@@ -1,7 +1,7 @@
 diff --git a/blink/blinkenlib.c b/blink/blinkenlib.c
 --- a/blink/blinkenlib.c
 +++ b/blink/blinkenlib.c
-@@ -134,7 +134,42 @@ u64 updateDisassembler() {
+@@ -134,7 +134,46 @@ u64 updateDisassembler() {
  }
  
  void update_clstruct(struct Machine *m) {
