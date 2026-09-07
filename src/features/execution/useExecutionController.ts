@@ -1,7 +1,7 @@
 import { useCallback, useEffect, useRef, useState } from 'react';
 import { loadCapstone } from '../capstone/capstoneLoader';
 import { AsmSourceExecutionSession, asmSourceExecutionSupport } from './asmSourceSession';
-import { DEFAULT_EXECUTION_POLICY, type ExecutionSnapshot, type ExecutionSupport, type ExecutionTarget } from './model';
+import { DEFAULT_EXECUTION_POLICY, type ExecutionPolicy, type ExecutionSnapshot, type ExecutionSupport, type ExecutionTarget } from './model';
 import { BlinkProcessSession } from './blinkProcessSession';
 import {
   auditBlinkIsaForFile,
@@ -16,13 +16,21 @@ import {
   describeBlinkRuntimeIsaFailure
 } from './runtimeIsaAudit';
 import { describeRuntimeSymbolVersionFailure } from './runtimeSymbolVersions';
+import { prepareLinuxRuntimeEnvironment } from './linuxRuntimeEnvironment';
 import { executionSupport, X86ExecutionSession } from './session';
 import { UnicornMachineSession } from './unicornMachineSession';
+import { UnicornLinuxProcessSession } from './unicornLinuxProcessSession';
 import { registerActiveExecutionInputSink } from './activeInput';
 import { registerActiveExecutionProbeSink } from './activeProbe';
 import { appendExecutionStdin } from './stdinQueue';
 
-type BrowserExecutionSession = X86ExecutionSession | UnicornMachineSession | AsmSourceExecutionSession | BlinkProcessSession;
+type BrowserExecutionSession = X86ExecutionSession | UnicornMachineSession | UnicornLinuxProcessSession | AsmSourceExecutionSession | BlinkProcessSession;
+
+const UNICORN_LINUX_POLICY: ExecutionPolicy = Object.freeze({
+  ...DEFAULT_EXECUTION_POLICY,
+  maxInstructions: Math.max(DEFAULT_EXECUTION_POLICY.maxInstructions, 2_000_000),
+  maxMappedBytes: Math.max(DEFAULT_EXECUTION_POLICY.maxMappedBytes, 256 * 1024 * 1024)
+});
 
 const IDLE_SNAPSHOT: ExecutionSnapshot = {
   status: 'idle',
@@ -46,14 +54,18 @@ const IDLE_SNAPSHOT: ExecutionSnapshot = {
 export function executionSupportForTarget(target: ExecutionTarget): ExecutionSupport {
   if (target.kind !== 'binary') return asmSourceExecutionSupport(target.file, target.source);
   const support = executionSupport(target.image);
-  if (!support.supported || support.provider !== 'bounded-x86-64') return support;
+  if (!support.supported) return support;
+  const dynamic = target.image.kind === 'pie-executable' || !!target.image.interpreter || target.image.neededLibraries.length > 0;
   return {
     ...support,
-    provider: 'unicorn-machine',
-    notes: [
-      'Static fixed-address ELF will use the Unicorn/WASM x86-64 machine backend.',
-      ...support.notes.filter((note) => !note.toLowerCase().includes('bounded instruction provider'))
-    ]
+    provider: dynamic ? 'unicorn-linux' : 'unicorn-machine',
+    notes: dynamic
+      ? [
+          'Linux ELF will use the kernel-less Unicorn/WASM process backend.',
+          ...(target.image.interpreter ? [`PT_INTERP ${target.image.interpreter} will execute from the selected Global Dependency bytes.`] : []),
+          ...(target.image.neededLibraries.length ? [`${target.image.neededLibraries.length} direct DT_NEEDED entr${target.image.neededLibraries.length === 1 ? 'y' : 'ies'} will be resolved recursively from Global Dependencies.`] : [])
+        ]
+      : ['Static fixed-address ELF will use the Unicorn/WASM x86-64 machine backend.']
   };
 }
 
@@ -82,6 +94,8 @@ function nextFrame(): Promise<void> {
 
 export function useExecutionController() {
   const [snapshot, setSnapshot] = useState<ExecutionSnapshot>(IDLE_SNAPSHOT);
+  // Retained for the explicit Blink diagnostic probe. Normal guest execution no
+  // longer gates on Blink's CPU profile because Unicorn owns the execution path.
   const [preflight, setPreflight] = useState<BlinkIsaPreflightState>(() => idleBlinkIsaPreflight());
   const sessionRef = useRef<BrowserExecutionSession | null>(null);
   const lastTargetRef = useRef<ExecutionTarget | null>(null);
@@ -101,118 +115,43 @@ export function useExecutionController() {
 
   const createSession = useCallback(async (
     target: ExecutionTarget,
-    force = false,
-    allowIncompatibleIsa = false
+    force = false
   ): Promise<BrowserExecutionSession | null> => {
     lastTargetRef.current = target;
     const current = sessionRef.current;
     if (!force && current && sameTarget(current, target)) return current;
     const generation = ++runGeneration.current;
     current?.dispose();
-    let isaAuditStarted = false;
-    let isaAuditFinished = false;
-    let isaAuditStartedAt = 0;
+    sessionRef.current = null;
 
     try {
       const support = executionSupportForTarget(target);
       if (!support.supported || !support.provider) throw new Error(support.reasons.join(' '));
       let session: BrowserExecutionSession;
-      if (target.kind === 'asm-source') {
-        setPreflight(idleBlinkIsaPreflight());
-        session = new AsmSourceExecutionSession(target.file, target.source, DEFAULT_EXECUTION_POLICY);
-      } else if (support.provider === 'blink-process') {
-        isaAuditStarted = true;
-        isaAuditStartedAt = performance.now();
-        setPreflight({
-          ...idleBlinkIsaPreflight(),
-          status: 'scanning',
-          targetFileId: target.file.id,
-          targetName: target.file.name,
-          elapsedMs: 0
-        });
-        const isaAudit = await auditBlinkIsaForFile(target.file, {
-          onProgress: (progress) => {
-            if (runGeneration.current !== generation) return;
-            setPreflight({
-              status: 'scanning',
-              targetFileId: target.file.id,
-              targetName: target.file.name,
-              elapsedMs: Math.max(0, performance.now() - isaAuditStartedAt),
-              scannedInstructions: progress.scannedInstructions,
-              processedBytes: progress.processedBytes,
-              totalBytes: progress.totalBytes,
-              unsupportedFamilies: progress.unsupportedFamilies,
-              evidence: progress.evidence,
-              message: progress.unsupportedFamilies.length
-                ? `Detected unsupported ISA evidence while scanning ${target.file.name}; the complete executable-byte audit will finish before launch.`
-                : null
-            });
-          }
-        });
-        if (runGeneration.current !== generation) return null;
-        isaAuditFinished = true;
-        const elapsedMs = Math.max(0, performance.now() - isaAuditStartedAt);
-        const failure = isaAudit.compatible ? null : describeBlinkIsaAuditFailure(target.file.name, isaAudit);
-        const diagnosticSuffix = failure && allowIncompatibleIsa
-          ? ' Diagnostic probe explicitly requested: compatibility remains failed, but Blink will run in the sandbox so an observed signal/RIP can be captured if the guest reaches the unsupported path.'
-          : '';
-        setPreflight({
-          status: isaAudit.compatible ? 'compatible' : 'incompatible',
-          targetFileId: target.file.id,
-          targetName: target.file.name,
-          elapsedMs,
-          scannedInstructions: isaAudit.scannedInstructions,
-          processedBytes: isaAudit.decodedBytes + isaAudit.skippedBytes,
-          totalBytes: isaAudit.decodedBytes + isaAudit.skippedBytes,
-          unsupportedFamilies: isaAudit.unsupportedFamilies,
-          evidence: isaAudit.evidence,
-          message: failure ? `${failure}${diagnosticSuffix}` : null
-        });
-        if (failure && !allowIncompatibleIsa) throw new Error(failure);
+      setPreflight(idleBlinkIsaPreflight());
 
-        // Resolve Global Dependencies once, validate the exact selected bytes,
-        // inventory the same runtime modules for ISA evidence, then hand the
-        // immutable preparation to Blink. Whole-image AVX/etc. inside DSOs is
-        // advisory because glibc/multiarch/IFUNC can dispatch around it; only
-        // mandatory runtime-path evidence (currently PT_INTERP entry) blocks.
-        const runtimeEnvironment = await prepareBlinkRuntimeEnvironment(target.file, target.image);
+      if (target.kind === 'asm-source') {
+        session = new AsmSourceExecutionSession(target.file, target.source, DEFAULT_EXECUTION_POLICY);
+      } else if (support.provider === 'unicorn-linux') {
+        const runtimeEnvironment = await prepareLinuxRuntimeEnvironment(target.file, target.image);
         if (runGeneration.current !== generation) return null;
         if (!runtimeEnvironment.symbolVersions.compatible) {
           throw new Error(describeRuntimeSymbolVersionFailure(runtimeEnvironment.symbolVersions));
         }
-        if (!runtimeEnvironment.runtimeIsa.compatible && !allowIncompatibleIsa) {
-          throw new Error(describeBlinkRuntimeIsaFailure(runtimeEnvironment.runtimeIsa));
-        }
-
-        const runtimeIsaMessage = !runtimeEnvironment.runtimeIsa.compatible
-          ? `${describeBlinkRuntimeIsaFailure(runtimeEnvironment.runtimeIsa)} Diagnostic probe explicitly requested: Blink will run so an observed signal/RIP can confirm the actual path.`
-          : describeBlinkRuntimeIsaAdvisory(runtimeEnvironment.runtimeIsa);
-        if (runtimeIsaMessage) {
-          setPreflight((currentPreflight) => ({
-            ...currentPreflight,
-            message: currentPreflight.message
-              ? `${currentPreflight.message} ${runtimeIsaMessage}`
-              : runtimeIsaMessage
-          }));
-        }
-
-        session = await BlinkProcessSession.create(
+        session = await UnicornLinuxProcessSession.create(
           target.file,
           target.image,
-          DEFAULT_EXECUTION_POLICY,
-          undefined,
-          runtimeEnvironment
+          runtimeEnvironment,
+          UNICORN_LINUX_POLICY
         );
       } else if (support.provider === 'unicorn-machine') {
-        setPreflight(idleBlinkIsaPreflight());
         session = await UnicornMachineSession.create(target.file, target.image, DEFAULT_EXECUTION_POLICY);
       } else {
-        // Deliberate legacy/reference fallback. Normal static browser routing
-        // selects unicorn-machine above; bounded-x86-64 remains useful to its
-        // deterministic headless regression tests.
-        setPreflight(idleBlinkIsaPreflight());
+        // Deliberate legacy/reference fallback. Browser routing above selects a
+        // Unicorn provider for every supported binary target.
         session = new X86ExecutionSession(target.file, target.image, await loadCapstone(), DEFAULT_EXECUTION_POLICY);
       }
+
       if (runGeneration.current !== generation) {
         session.dispose();
         return null;
@@ -223,16 +162,6 @@ export function useExecutionController() {
     } catch (error: unknown) {
       if (runGeneration.current !== generation) return null;
       const reason = error instanceof Error ? error.message : String(error);
-      if (isaAuditStarted && !isaAuditFinished) {
-        setPreflight((currentPreflight) => ({
-          ...currentPreflight,
-          status: 'error',
-          targetFileId: target.file.id,
-          targetName: target.file.name,
-          elapsedMs: Math.max(0, performance.now() - isaAuditStartedAt),
-          message: `Blink ISA preflight failed: ${reason}`
-        }));
-      }
       sessionRef.current = null;
       setSnapshot(failedSnapshot(target, reason));
       return null;
@@ -271,24 +200,96 @@ export function useExecutionController() {
   }, [createSession, driveRun]);
 
   /**
-   * Explicit diagnostic escape hatch for an ELF already proven incompatible by
-   * static ISA preflight. Normal Run remains fail-closed; Probe exists solely to
-   * capture the actually observed guest signal/RIP/instruction inside Blink.
+   * Blink is retained as an explicit reference/diagnostic backend. It is not
+   * selected by normal Run/Step. Probe intentionally repeats Blink-specific ISA
+   * evidence and captures its signal/RIP diagnostics for backend comparison.
    */
   const probe = useCallback(async (target: ExecutionTarget) => {
     if (target.kind !== 'binary') {
       setSnapshot(failedSnapshot(target, 'Diagnostic Probe requires an analyzed binary target.'));
       return;
     }
-    const support = executionSupportForTarget(target);
-    if (support.provider !== 'blink-process') {
-      setSnapshot(failedSnapshot(target, 'Diagnostic Probe is only available for blink-process targets.'));
-      return;
+
+    lastTargetRef.current = target;
+    const generation = ++runGeneration.current;
+    sessionRef.current?.dispose();
+    sessionRef.current = null;
+    const startedAt = performance.now();
+
+    try {
+      setPreflight({
+        ...idleBlinkIsaPreflight(),
+        status: 'scanning',
+        targetFileId: target.file.id,
+        targetName: target.file.name,
+        elapsedMs: 0
+      });
+      const isaAudit = await auditBlinkIsaForFile(target.file, {
+        onProgress: (progress) => {
+          if (runGeneration.current !== generation) return;
+          setPreflight({
+            status: 'scanning',
+            targetFileId: target.file.id,
+            targetName: target.file.name,
+            elapsedMs: Math.max(0, performance.now() - startedAt),
+            scannedInstructions: progress.scannedInstructions,
+            processedBytes: progress.processedBytes,
+            totalBytes: progress.totalBytes,
+            unsupportedFamilies: progress.unsupportedFamilies,
+            evidence: progress.evidence,
+            message: progress.unsupportedFamilies.length
+              ? `Detected unsupported Blink ISA evidence while scanning ${target.file.name}; Probe will continue to capture observed runtime evidence.`
+              : null
+          });
+        }
+      });
+      if (runGeneration.current !== generation) return;
+      const failure = isaAudit.compatible ? null : describeBlinkIsaAuditFailure(target.file.name, isaAudit);
+      setPreflight({
+        status: isaAudit.compatible ? 'compatible' : 'incompatible',
+        targetFileId: target.file.id,
+        targetName: target.file.name,
+        elapsedMs: Math.max(0, performance.now() - startedAt),
+        scannedInstructions: isaAudit.scannedInstructions,
+        processedBytes: isaAudit.decodedBytes + isaAudit.skippedBytes,
+        totalBytes: isaAudit.decodedBytes + isaAudit.skippedBytes,
+        unsupportedFamilies: isaAudit.unsupportedFamilies,
+        evidence: isaAudit.evidence,
+        message: failure ? `${failure} Blink Probe will still run to collect observed signal/RIP evidence.` : null
+      });
+
+      const runtimeEnvironment = await prepareBlinkRuntimeEnvironment(target.file, target.image);
+      if (runGeneration.current !== generation) return;
+      if (!runtimeEnvironment.symbolVersions.compatible) {
+        throw new Error(describeRuntimeSymbolVersionFailure(runtimeEnvironment.symbolVersions));
+      }
+      const runtimeIsaMessage = !runtimeEnvironment.runtimeIsa.compatible
+        ? `${describeBlinkRuntimeIsaFailure(runtimeEnvironment.runtimeIsa)} Blink Probe will still run to capture observed evidence.`
+        : describeBlinkRuntimeIsaAdvisory(runtimeEnvironment.runtimeIsa);
+      if (runtimeIsaMessage) {
+        setPreflight((currentPreflight) => ({
+          ...currentPreflight,
+          message: currentPreflight.message ? `${currentPreflight.message} ${runtimeIsaMessage}` : runtimeIsaMessage
+        }));
+      }
+
+      const session = await BlinkProcessSession.create(
+        target.file,
+        target.image,
+        DEFAULT_EXECUTION_POLICY,
+        undefined,
+        runtimeEnvironment
+      );
+      if (runGeneration.current !== generation) { session.dispose(); return; }
+      sessionRef.current = session;
+      setSnapshot(session.snapshot());
+      await driveRun(session);
+    } catch (error: unknown) {
+      if (runGeneration.current !== generation) return;
+      const reason = error instanceof Error ? error.message : String(error);
+      setSnapshot(failedSnapshot(target, reason));
     }
-    const session = await createSession(target, true, true);
-    if (!session) return;
-    await driveRun(session);
-  }, [createSession, driveRun]);
+  }, [driveRun]);
 
   useEffect(() => registerActiveExecutionProbeSink(() => {
     const target = lastTargetRef.current;
