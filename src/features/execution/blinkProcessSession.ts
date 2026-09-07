@@ -365,7 +365,7 @@ export class BlinkProcessSession {
         this.providerDiagnostics.add('error', `Fatal-signal register capture failed: ${describeExecutionError(error)}`);
       }
 
-      let runtimeCodeBytes = new Uint8Array();
+      let runtimeCodeBytes: Uint8Array<ArrayBufferLike> = new Uint8Array();
       try { runtimeCodeBytes = this.readObservedCodeBytes(); }
       catch (error: unknown) {
         this.providerDiagnostics.add('warning', `Fatal-signal code-byte capture failed: ${describeExecutionError(error)}`);
