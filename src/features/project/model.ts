@@ -21,7 +21,7 @@ export interface ProjectFile {
   path: string;
   name: string;
   kind: ProjectFileKind;
-  language: 'asm' | 'text' | 'json' | 'markdown' | 'binary';
+  language: 'asm' | 'disassembly-dump' | 'text' | 'json' | 'markdown' | 'binary';
   text?: string;
   bytes?: ArrayBuffer;
   size: number;
