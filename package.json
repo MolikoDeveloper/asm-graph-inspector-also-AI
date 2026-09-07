@@ -10,7 +10,7 @@
     "typecheck": "tsc -b --pretty false",
     "vendor:blink": "bash scripts/vendor-blink.sh",
     "test:execution": "bun tests/execution/bounded-execution-smoke.ts && bun tests/execution/raw-asm-source-smoke.ts && bun tests/execution/execution-follow-smoke.ts && bun tests/execution/program-flow-callgraph-smoke.ts && bun tests/execution/dependency-closure-smoke.ts && bun tests/execution/blink-build-profile-smoke.ts && bun tests/execution/blink-process-state-smoke.ts && bun tests/execution/blink-provider-diagnostic-smoke.ts && bun tests/execution/headless-runner-smoke.ts && bun tests/execution/headless-capstone-smoke.ts",
-    "test:toolchain": "bun tests/toolchain/nasm-ld-backend-smoke.ts",
+    "test:toolchain": "bun tests/toolchain/nasm-ld-backend-smoke.ts && bun tests/toolchain/blink-tool-runner-smoke.ts",
     "execute": "bun scripts/execute.ts",
     "test:headless": "bun tests/execution/headless-runner-smoke.ts && bun tests/execution/headless-capstone-smoke.ts",
     "test:program-flow": "bun tests/execution/program-flow-callgraph-smoke.ts",
