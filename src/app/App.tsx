@@ -24,6 +24,7 @@ import { useAppSettings } from './settings';
 import { ActivityBar } from '../components/ActivityBar';
 import { AboutDialog } from '../components/AboutDialog';
 import { BottomPanel, type OutputEntry } from '../components/BottomPanel';
+import type { InspectorTerminalCommandResult } from '../components/InspectorTerminal';
 import { EditorWorkspace } from '../components/EditorWorkspace';
 import { AnalysisDock } from '../components/AnalysisDock';
 import { MenuBar, type MenuDefinition } from '../components/MenuBar';
@@ -34,7 +35,13 @@ import { ResizeHandle } from '../components/ResizeHandle';
 import { SettingsDialog } from '../components/SettingsDialog';
 import { StatusBar } from '../components/StatusBar';
 
+const AUTO_STEP_INTERVAL_MS = 50;
 
+type RuntimeOutputChannel = 'terminal' | 'diagnostics';
+
+function nextFrame(): Promise<void> {
+  return new Promise((resolve) => window.requestAnimationFrame(() => resolve()));
+}
 
 export function App() {
   const projects = useProjectController();
@@ -55,6 +62,8 @@ export function App() {
   const [output, setOutput] = useState<OutputEntry[]>([]);
   const [capstoneStatus, setCapstoneStatus] = useState<CapstoneStatus>('idle');
   const [assemblyBusy, setAssemblyBusy] = useState(false);
+  const [runtimeOutputChannel, setRuntimeOutputChannel] = useState<RuntimeOutputChannel>('terminal');
+  const [autoStepping, setAutoStepping] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const lastProjectId = useRef<string | null>(null);
@@ -67,6 +76,8 @@ export function App() {
   const executionFollowKey = useRef<string | null>(null);
   const executionAnalysisKey = useRef<string | null>(null);
   const assemblyBackendRef = useRef<Promise<AssemblerBackend> | null>(null);
+  const autoStepTargetRef = useRef<ExecutionTarget | null>(null);
+  const autoStepBusyRef = useRef(false);
 
   const project = projects.project;
   const activeGroup = workspace.groups.find((group) => group.id === workspace.activeGroupId) ?? workspace.groups[0];
@@ -97,7 +108,12 @@ export function App() {
   useEffect(() => { selectedNodeRef.current = selectedNodeId; }, [selectedNodeId]);
   useEffect(() => { activeFileIdRef.current = activeFile?.id ?? null; }, [activeFile?.id]);
   useEffect(() => {
-    if (execution.snapshot.targetFileId && execution.snapshot.targetFileId !== (activeFile?.id ?? null)) execution.clear();
+    if (execution.snapshot.targetFileId && execution.snapshot.targetFileId !== (activeFile?.id ?? null)) {
+      setAutoStepping(false);
+      autoStepTargetRef.current = null;
+      autoStepBusyRef.current = false;
+      execution.clear();
+    }
   }, [activeFile?.id, execution.snapshot.targetFileId, execution.clear]);
 
   useEffect(() => {
@@ -229,6 +245,9 @@ export function App() {
     clearBinaryAnalysisCache();
     clearFullDisassemblyCache();
     execution.clear();
+    setAutoStepping(false);
+    autoStepTargetRef.current = null;
+    autoStepBusyRef.current = false;
     setGraphs(new Map());
     setBinarySummaries(new Map());
     setProblemsByFile(new Map());
@@ -407,21 +426,22 @@ export function App() {
     void runBinaryAnalysis(activeFile, address, false);
   }, [activeFile, runBinaryAnalysis]);
 
-  const analyzeGeneratedBinary = useCallback(async (generated: ProjectFile, announceDiagnostics: boolean): Promise<ExecutionTarget> => {
+  const analyzeBinaryTarget = useCallback(async (file: ProjectFile, announceDiagnostics: boolean): Promise<ExecutionTarget> => {
+    if (file.kind !== 'binary' || !file.bytes) throw new Error(`${file.path} is not an executable binary artifact.`);
     setCapstoneStatus('loading');
-    const analyzed = await analyzeBinary(generated);
+    const analyzed = await analyzeBinary(file);
     setCapstoneStatus('ready');
-    commitGraph(generated.id, analyzed.graph);
+    commitGraph(file.id, analyzed.graph);
     setBinarySummaries((current) => {
       const next = new Map(current);
-      next.set(generated.id, analyzed.summary);
+      next.set(file.id, analyzed.summary);
       return next;
     });
     if (announceDiagnostics) for (const diagnostic of analyzed.graph.diagnostics) log(diagnostic, 'muted');
-    return { kind: 'binary', file: generated, image: analyzed.summary.image };
+    return { kind: 'binary', file, image: analyzed.summary.image };
   }, [commitGraph, log]);
 
-  const prepareActiveAsmBinary = useCallback(async (): Promise<{ target: ExecutionTarget; rebuilt: boolean } | null> => {
+  const resolveActiveAsmExecutionTarget = useCallback(async (): Promise<{ target: ExecutionTarget; rebuilt: boolean } | null> => {
     if (!project || activeFile?.kind !== 'text' || activeFile.language !== 'asm') {
       log('ASM execution requires an active ASM source file.', 'error');
       return null;
@@ -431,7 +451,7 @@ export function App() {
     setAssemblyBusy(true);
     try {
       const backend = await getAssemblyBackend();
-      log(`Preparing real ELF for ${activeFile.path}…`);
+      log(`Building execution artifact for ${activeFile.path}…`);
       const ensured = await ensureAssemblyExecutable(project, backend, { sourceFileIds: [activeFile.id] });
       const generated = ensured.file;
 
@@ -448,11 +468,11 @@ export function App() {
       }
 
       dispatch({ type: 'open-file', fileId: generated.id });
-      const target = await analyzeGeneratedBinary(generated, !ensured.reused);
+      const target = await analyzeBinaryTarget(generated, !ensured.reused);
       if (ensured.reused) {
         log(`Reusing fresh ${generated.path} for ${activeFile.path}; source revision is unchanged.`, 'muted');
       } else {
-        log(`Built ${activeFile.path} → ${generated.path}: ${generated.size.toLocaleString()} bytes. Run/Step now uses the real ELF.`, 'success');
+        log(`Built ${activeFile.path} → ${generated.path}: ${generated.size.toLocaleString()} bytes. Execution uses the real ELF.`, 'success');
       }
       return { target, rebuilt: !ensured.reused };
     } catch (error: unknown) {
@@ -462,7 +482,7 @@ export function App() {
     } finally {
       setAssemblyBusy(false);
     }
-  }, [activeFile, analyzeGeneratedBinary, assemblyBusy, getAssemblyBackend, log, project, projects]);
+  }, [activeFile, analyzeBinaryTarget, assemblyBusy, getAssemblyBackend, log, project, projects]);
 
   const buildActiveAssembly = useCallback(async (runAfterBuild = false) => {
     if (!project || activeFile?.kind !== 'text' || activeFile.language !== 'asm') {
@@ -472,6 +492,7 @@ export function App() {
     if (assemblyBusy) return;
 
     setAssemblyBusy(true);
+    if (runAfterBuild) setRuntimeOutputChannel('diagnostics');
     try {
       log(`Assembling ${activeFile.path} with pinned NASM + GNU ld…`);
       const backend = await getAssemblyBackend();
@@ -494,7 +515,7 @@ export function App() {
       projects.addFiles([generated]);
       dispatch({ type: 'open-file', fileId: generated.id });
 
-      const target = await analyzeGeneratedBinary(generated, true);
+      const target = await analyzeBinaryTarget(generated, true);
       const summary = binarySummaries.get(generated.id);
       log(`Built ${activeFile.path} → ${generated.path}: ${generated.size.toLocaleString()} bytes${summary ? `, ${summary.instructions.length} canonical instructions` : ''}.`, 'success');
 
@@ -505,7 +526,7 @@ export function App() {
           return;
         }
         execution.clear();
-        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        await nextFrame();
         await execution.run(target);
       }
     } catch (error: unknown) {
@@ -514,51 +535,203 @@ export function App() {
     } finally {
       setAssemblyBusy(false);
     }
-  }, [activeFile, analyzeGeneratedBinary, assemblyBusy, binarySummaries, execution, getAssemblyBackend, log, project, projects]);
+  }, [activeFile, analyzeBinaryTarget, assemblyBusy, binarySummaries, execution, getAssemblyBackend, log, project, projects]);
 
-  const prepareExecution = useCallback(async () => {
-    if (activeAsmBuildable) {
-      const prepared = await prepareActiveAsmBinary();
-      if (prepared) await execution.prepare(prepared.target);
-      return;
-    }
-    if (!executionTarget) { log('No executable binary or ASM source is active.', 'error'); return; }
-    await execution.prepare(executionTarget);
-  }, [activeAsmBuildable, execution, executionTarget, log, prepareActiveAsmBinary]);
+  const resolveActiveExecutionTarget = useCallback(async (): Promise<ExecutionTarget | null> => {
+    if (activeAsmBuildable) return (await resolveActiveAsmExecutionTarget())?.target ?? null;
+    if (executionTarget) return executionTarget;
+    log('No executable binary or ASM source is active.', 'error');
+    return null;
+  }, [activeAsmBuildable, executionTarget, log, resolveActiveAsmExecutionTarget]);
 
-  const stepExecution = useCallback(async () => {
-    if (activeAsmBuildable) {
-      const prepared = await prepareActiveAsmBinary();
-      if (!prepared) return;
-      if (prepared.rebuilt) await execution.prepare(prepared.target);
-      await execution.step(prepared.target);
-      return;
-    }
-    if (!executionTarget) { log('No executable binary or ASM source is active.', 'error'); return; }
-    await execution.step(executionTarget);
-  }, [activeAsmBuildable, execution, executionTarget, log, prepareActiveAsmBinary]);
+  const stepExecution = useCallback(async (origin: RuntimeOutputChannel = 'diagnostics') => {
+    setRuntimeOutputChannel(origin);
+    const target = await resolveActiveExecutionTarget();
+    if (!target) return;
+    await execution.step(target);
+  }, [execution, resolveActiveExecutionTarget]);
 
-  const runExecution = useCallback(async () => {
-    if (activeAsmBuildable) {
-      const prepared = await prepareActiveAsmBinary();
-      if (!prepared) return;
-      if (prepared.rebuilt) await execution.prepare(prepared.target);
-      await execution.run(prepared.target);
-      return;
-    }
-    if (!executionTarget) { log('No executable binary or ASM source is active.', 'error'); return; }
-    await execution.run(executionTarget);
-  }, [activeAsmBuildable, execution, executionTarget, log, prepareActiveAsmBinary]);
+  const runExecution = useCallback(async (origin: RuntimeOutputChannel = 'diagnostics') => {
+    setRuntimeOutputChannel(origin);
+    const target = await resolveActiveExecutionTarget();
+    if (!target) return;
+    await execution.run(target);
+  }, [execution, resolveActiveExecutionTarget]);
 
   const resetExecution = useCallback(async () => {
-    if (activeAsmBuildable) {
-      const prepared = await prepareActiveAsmBinary();
-      if (prepared) await execution.reset(prepared.target);
+    setAutoStepping(false);
+    autoStepTargetRef.current = null;
+    autoStepBusyRef.current = false;
+    setRuntimeOutputChannel('diagnostics');
+    const target = await resolveActiveExecutionTarget();
+    if (!target) return;
+    await execution.reset(target);
+  }, [execution, resolveActiveExecutionTarget]);
+
+  const pauseExecution = useCallback(() => {
+    setAutoStepping(false);
+    autoStepTargetRef.current = null;
+    autoStepBusyRef.current = false;
+    execution.pause();
+  }, [execution.pause]);
+
+  const probeExecution = useCallback(async () => {
+    setRuntimeOutputChannel('diagnostics');
+    const target = await resolveActiveExecutionTarget();
+    if (!target || target.kind !== 'binary') return;
+    await execution.probe(target);
+  }, [execution, resolveActiveExecutionTarget]);
+
+  const toggleAutoStepExecution = useCallback(async () => {
+    if (autoStepping) {
+      setAutoStepping(false);
+      autoStepTargetRef.current = null;
+      autoStepBusyRef.current = false;
       return;
     }
-    if (!executionTarget) { log('No executable binary or ASM source is active.', 'error'); return; }
-    await execution.reset(executionTarget);
-  }, [activeAsmBuildable, execution, executionTarget, log, prepareActiveAsmBinary]);
+    setRuntimeOutputChannel('diagnostics');
+    const target = await resolveActiveExecutionTarget();
+    if (!target) return;
+    autoStepTargetRef.current = target;
+    autoStepBusyRef.current = false;
+    setAutoStepping(true);
+  }, [autoStepping, resolveActiveExecutionTarget]);
+
+  useEffect(() => {
+    if (!autoStepping) return;
+    if (execution.snapshot.status === 'exited' || execution.snapshot.status === 'halted' || execution.snapshot.status === 'trapped' || execution.snapshot.status === 'running') {
+      setAutoStepping(false);
+      autoStepTargetRef.current = null;
+      autoStepBusyRef.current = false;
+      return;
+    }
+    if (autoStepBusyRef.current) return;
+    const timer = window.setTimeout(() => {
+      const target = autoStepTargetRef.current;
+      if (!target) {
+        setAutoStepping(false);
+        return;
+      }
+      autoStepBusyRef.current = true;
+      void execution.step(target).finally(() => {
+        autoStepBusyRef.current = false;
+      });
+    }, AUTO_STEP_INTERVAL_MS);
+    return () => window.clearTimeout(timer);
+  }, [autoStepping, execution, execution.snapshot.instructionCount, execution.snapshot.status, execution.snapshot.targetFileId]);
+
+  const findProjectFile = useCallback((rawPath: string): ProjectFile | null => {
+    if (!project) return null;
+    const clean = rawPath.trim().replace(/^['"]|['"]$/g, '').replace(/^\.\//, '').replace(/^\/+/, '');
+    if (!clean) return null;
+    const exact = project.files.find((file) => file.path === clean);
+    if (exact) return exact;
+    const nameMatches = project.files.filter((file) => file.name === clean);
+    return nameMatches.length === 1 ? nameMatches[0] : null;
+  }, [project]);
+
+  const runProjectBinaryFromTerminal = useCallback(async (file: ProjectFile): Promise<void> => {
+    if (file.kind !== 'binary' || !file.bytes) throw new Error(`${file.path} is not an executable binary artifact.`);
+    setRuntimeOutputChannel('terminal');
+    setAutoStepping(false);
+    autoStepTargetRef.current = null;
+    autoStepBusyRef.current = false;
+    dispatch({ type: 'open-file', fileId: file.id });
+
+    const summary = binarySummaries.get(file.id);
+    const target: ExecutionTarget = summary
+      ? { kind: 'binary', file, image: summary.image }
+      : await analyzeBinaryTarget(file, false);
+
+    await nextFrame();
+    execution.clear();
+    await nextFrame();
+    await execution.run(target);
+  }, [analyzeBinaryTarget, binarySummaries, execution]);
+
+  const executeTerminalCommand = useCallback(async (rawCommand: string): Promise<InspectorTerminalCommandResult> => {
+    const command = rawCommand.trim();
+    if (!command) return {};
+
+    const directFile = findProjectFile(command);
+    if (directFile) {
+      if (directFile.kind === 'binary') {
+        await runProjectBinaryFromTerminal(directFile);
+        return {};
+      }
+      dispatch({ type: 'open-file', fileId: directFile.id });
+      return { lines: [{ level: 'info', text: `Opened ${directFile.path}.` }] };
+    }
+
+    const [verbRaw, ...rest] = command.split(/\s+/);
+    const verb = verbRaw.toLowerCase();
+    const argument = rest.join(' ').trim();
+
+    if (verb === 'help') {
+      return {
+        lines: [
+          { level: 'info', text: 'Inspector commands:' },
+          { level: 'muted', text: '  <project ELF path>   execute directly, e.g. build/ray_test' },
+          { level: 'muted', text: '  run [path]           run the active executable or a project ELF' },
+          { level: 'muted', text: '  open <path>          open a binary, source, or objdump artifact' },
+          { level: 'muted', text: '  analyze <path>       analyze an ELF or ASM artifact' },
+          { level: 'muted', text: '  stdin <text>         send a line to the active guest process' },
+          { level: 'muted', text: '  status               show current execution state' },
+          { level: 'muted', text: '  clear                clear this console' }
+        ]
+      };
+    }
+
+    if (verb === 'clear') return { clear: true };
+
+    if (verb === 'status') {
+      const crash = execution.snapshot.crash;
+      return {
+        lines: [{
+          level: crash ? 'error' : 'info',
+          text: `${execution.snapshot.status} · ${execution.snapshot.provider ?? 'no execution provider'} · ${execution.snapshot.instructionCount.toLocaleString()} stepped instruction(s)${execution.snapshot.exitCode !== null ? ` · exit ${execution.snapshot.exitCode}` : ''}${crash?.runtimeAddress !== null && crash?.runtimeAddress !== undefined ? ` · ${crash.signalName} @ 0x${crash.runtimeAddress.toString(16)}` : ''}`
+        }]
+      };
+    }
+
+    if (verb === 'run') {
+      if (!argument) {
+        await runExecution('terminal');
+        return {};
+      }
+      const file = findProjectFile(argument);
+      if (!file) return { lines: [{ level: 'error', text: `Project path not found: ${argument}` }] };
+      if (file.kind !== 'binary') return { lines: [{ level: 'error', text: `${file.path} is not a binary artifact.` }] };
+      await runProjectBinaryFromTerminal(file);
+      return {};
+    }
+
+    if (verb === 'open') {
+      if (!argument) return { lines: [{ level: 'error', text: 'Usage: open <project path>' }] };
+      const file = findProjectFile(argument);
+      if (!file) return { lines: [{ level: 'error', text: `Project path not found: ${argument}` }] };
+      dispatch({ type: 'open-file', fileId: file.id });
+      return { lines: [{ level: 'success', text: `Opened ${file.path}.` }] };
+    }
+
+    if (verb === 'analyze') {
+      if (!argument) return { lines: [{ level: 'error', text: 'Usage: analyze <project path>' }] };
+      const file = findProjectFile(argument);
+      if (!file) return { lines: [{ level: 'error', text: `Project path not found: ${argument}` }] };
+      dispatch({ type: 'open-file', fileId: file.id });
+      if (file.kind === 'binary') {
+        await analyzeBinaryTarget(file, false);
+        return { lines: [{ level: 'success', text: `Analyzed ${file.path} from authoritative ELF bytes with Capstone.` }] };
+      }
+      if (file.language === 'asm') {
+        const valid = analyzeSourceCandidate(file, file.text ?? '', false);
+        return { lines: [{ level: valid ? 'success' : 'error', text: valid ? `Analyzed ${file.path}.` : `${file.path} contains syntax problems; the last valid graph was preserved.` }] };
+      }
+      return { lines: [{ level: 'info', text: `Opened ${file.path} as external disassembly/objdump evidence. Binary bytes remain authoritative for CFG and execution.` }] };
+    }
+
+    return { lines: [{ level: 'error', text: `Unknown inspector command: ${verbRaw}. Type help for the available commands.` }] };
+  }, [analyzeBinaryTarget, analyzeSourceCandidate, execution.snapshot, findProjectFile, runExecution, runProjectBinaryFromTerminal]);
 
   const exportCurrentProject = useCallback(() => {
     if (!project) return;
@@ -617,11 +790,13 @@ export function App() {
     {
       label: 'Run',
       items: [
-        { label: 'Run Active Program', shortcut: 'F6', action: () => void runExecution(), disabled: assemblyBusy || activeExecutionSupport?.supported !== true },
-        { label: 'Step Instruction', shortcut: 'F10', action: () => void stepExecution(), disabled: assemblyBusy || activeExecutionSupport?.supported !== true },
-        { label: 'Pause', action: execution.pause, disabled: execution.snapshot.status !== 'running' },
+        { label: 'Run Active Program', shortcut: 'F6', action: () => void runExecution('diagnostics'), disabled: assemblyBusy || activeExecutionSupport?.supported !== true || autoStepping },
+        { label: 'Step Instruction', shortcut: 'F10', action: () => void stepExecution('diagnostics'), disabled: assemblyBusy || activeExecutionSupport?.supported !== true || execution.snapshot.status === 'running' || autoStepping },
+        { label: autoStepping ? 'Stop Auto Step' : 'Auto Step', shortcut: 'F11', action: () => void toggleAutoStepExecution(), disabled: assemblyBusy || activeExecutionSupport?.supported !== true || execution.snapshot.status === 'running' },
+        { label: 'Pause', action: pauseExecution, disabled: execution.snapshot.status !== 'running' && !autoStepping },
         { separator: true, label: '' },
-        { label: 'Prepare / Reset', action: () => void resetExecution(), disabled: assemblyBusy || activeExecutionSupport?.supported !== true }
+        { label: 'Reset Execution', shortcut: 'Shift F5', action: () => void resetExecution(), disabled: assemblyBusy || activeExecutionSupport?.supported !== true },
+        ...(execution.preflight.status === 'incompatible' ? [{ label: 'Probe Observed Failure', action: () => void probeExecution(), disabled: assemblyBusy || execution.snapshot.status === 'running' }] : [])
       ]
     },
     {
@@ -632,7 +807,7 @@ export function App() {
       ]
     },
     { label: 'Help', items: [{ label: 'About', action: () => setAboutOpen(true) }] }
-  ], [activeFile, activeAsmBuildable, activeExecutionSupport, assemblyBusy, buildActiveAssembly, execution.pause, execution.snapshot.status, exportCurrentProject, log, openNewFileDialog, projects, resetExecution, runAnalysis, runExecution, stepExecution, workspace.activeGroupId]);
+  ], [activeFile, activeAsmBuildable, activeExecutionSupport, assemblyBusy, autoStepping, buildActiveAssembly, execution.preflight.status, execution.snapshot.status, exportCurrentProject, log, openNewFileDialog, pauseExecution, probeExecution, projects, resetExecution, runAnalysis, runExecution, stepExecution, toggleAutoStepExecution, workspace.activeGroupId]);
 
   useEffect(() => {
     folderInputRef.current?.setAttribute('webkitdirectory', '');
@@ -656,13 +831,15 @@ export function App() {
       if ((event.ctrlKey || event.metaKey) && event.key === '\\') { event.preventDefault(); dispatch({ type: 'split-right' }); }
       if ((event.ctrlKey || event.metaKey) && event.key === ',') { event.preventDefault(); setSettingsOpen(true); }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'n') { event.preventDefault(); if (project) openNewFileDialog(''); }
+      if (event.shiftKey && event.key === 'F5') { event.preventDefault(); void resetExecution(); return; }
       if (event.key === 'F5') { event.preventDefault(); void runAnalysis(); }
-      if (event.key === 'F6') { event.preventDefault(); void runExecution(); }
-      if (event.key === 'F10') { event.preventDefault(); void stepExecution(); }
+      if (event.key === 'F6') { event.preventDefault(); void runExecution('diagnostics'); }
+      if (event.key === 'F10') { event.preventDefault(); void stepExecution('diagnostics'); }
+      if (event.key === 'F11') { event.preventDefault(); void toggleAutoStepExecution(); }
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [buildActiveAssembly, openNewFileDialog, project, projects, runAnalysis, runExecution, stepExecution]);
+  }, [buildActiveAssembly, openNewFileDialog, project, projects, resetExecution, runAnalysis, runExecution, stepExecution, toggleAutoStepExecution]);
 
   if (!project) {
     return <ProjectGate projects={projects.summaries} loading={projects.loading} onCreate={projects.createProject} onOpen={projects.openProject} onDelete={projects.deleteProject} />;
@@ -709,7 +886,7 @@ export function App() {
         <main className="workbench">
           <div
             className="workbench-main"
-            style={{ gridTemplateColumns: workspace.graphVisible ? `minmax(200px, 1fr) 4px minmax(280px, clamp(280px, ${workspace.analysisWidth}px, 55vw))` : 'minmax(0, 1fr)' }}
+            style={{ gridTemplateColumns: workspace.graphVisible ? `minmax(200px, 1fr) 4px minmax(340px, clamp(340px, ${workspace.analysisWidth}px, 58vw))` : 'minmax(0, 1fr)' }}
           >
             <EditorWorkspace
               project={project}
@@ -750,7 +927,20 @@ export function App() {
             ) : null}
           </div>
           {workspace.bottomPanelVisible ? <ResizeHandle orientation="horizontal" onDelta={(delta) => dispatch({ type: 'resize-bottom', height: workspace.bottomPanelHeight - delta })} /> : null}
-          {workspace.bottomPanelVisible ? <div className="bottom-panel-shell" style={{ height: workspace.bottomPanelHeight }}><BottomPanel entries={output} problems={activeProblems} onSelectProblem={(problem) => { dispatch({ type: 'open-file', fileId: problem.fileId }); reveal(problem.fileId, { line: problem.line }); }} execution={execution.snapshot} executionSupport={activeExecutionSupport} executionTargetName={activeFile?.name ?? null} onExecutionPrepare={() => void prepareExecution()} onExecutionRun={() => void runExecution()} onExecutionPause={execution.pause} onExecutionStep={() => void stepExecution()} onExecutionReset={() => void resetExecution()} /></div> : null}
+          {workspace.bottomPanelVisible ? (
+            <div className="bottom-panel-shell" style={{ height: workspace.bottomPanelHeight }}>
+              <BottomPanel
+                entries={output}
+                problems={activeProblems}
+                onSelectProblem={(problem) => { dispatch({ type: 'open-file', fileId: problem.fileId }); reveal(problem.fileId, { line: problem.line }); }}
+                execution={execution.snapshot}
+                executionSupport={activeExecutionSupport}
+                executionTargetName={activeFile?.name ?? null}
+                runtimeOutputChannel={runtimeOutputChannel}
+                onTerminalCommand={executeTerminalCommand}
+              />
+            </div>
+          ) : null}
         </main>
       </div>
       <StatusBar project={project} activeFile={activeFile} saveState={projects.saveState} capstoneStatus={capstoneStatus} nodeCount={activeGraph?.nodes.length ?? 0} />
