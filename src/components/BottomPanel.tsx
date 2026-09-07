@@ -1,7 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, CheckCircle2, TerminalSquare } from 'lucide-react';
 import type { AssemblyProblem } from '../features/analysis/asmParser';
-import type { BlinkIsaPreflightState } from '../features/execution/blinkIsaPreflight';
+import { useBlinkIsaPreflightMonitor } from '../features/execution/blinkIsaPreflightMonitor';
 import type { ExecutionSnapshot, ExecutionSupport } from '../features/execution/model';
 import { ExecutionConsole } from './ExecutionConsole';
 
@@ -16,12 +16,11 @@ function buildStarted(message: string | undefined): boolean {
   return !!message && (message.startsWith('Preparing real ELF for ') || (message.startsWith('Assembling ') && message.includes('pinned NASM + GNU ld')));
 }
 
-export function BottomPanel({ entries, problems, onSelectProblem, execution, executionPreflight, executionSupport, executionTargetName, onExecutionPrepare, onExecutionRun, onExecutionPause, onExecutionStep, onExecutionReset }: {
+export function BottomPanel({ entries, problems, onSelectProblem, execution, executionSupport, executionTargetName, onExecutionPrepare, onExecutionRun, onExecutionPause, onExecutionStep, onExecutionReset }: {
   entries: OutputEntry[];
   problems: AssemblyProblem[];
   onSelectProblem(problem: AssemblyProblem): void;
   execution: ExecutionSnapshot;
-  executionPreflight: BlinkIsaPreflightState;
   executionSupport: ExecutionSupport | null;
   executionTargetName: string | null;
   onExecutionPrepare(): void;
@@ -31,6 +30,7 @@ export function BottomPanel({ entries, problems, onSelectProblem, execution, exe
   onExecutionReset(): void;
 }) {
   const [tab, setTab] = useState<'output' | 'problems' | 'debug'>('output');
+  const executionPreflight = useBlinkIsaPreflightMonitor();
   const errorCount = problems.filter((problem) => problem.severity === 'error').length;
   useEffect(() => {
     if (errorCount > 0) setTab('problems');
