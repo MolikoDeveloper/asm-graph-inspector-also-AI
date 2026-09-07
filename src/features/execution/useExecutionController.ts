@@ -10,6 +10,8 @@ import {
   type BlinkIsaPreflightState
 } from './blinkIsaPreflight';
 import { publishBlinkIsaPreflight } from './blinkIsaPreflightMonitor';
+import { materializeRuntimeDependencyClosure } from './runtimeDependencies';
+import { describeRuntimeSymbolVersionFailure, validateRuntimeSymbolVersions } from './runtimeSymbolVersions';
 import { executionSupport, X86ExecutionSession } from './session';
 import { registerActiveExecutionInputSink } from './activeInput';
 import { registerActiveExecutionProbeSink } from './activeProbe';
@@ -152,6 +154,17 @@ export function useExecutionController() {
           message: failure ? `${failure}${diagnosticSuffix}` : null
         });
         if (failure && !allowIncompatibleIsa) throw new Error(failure);
+
+        // Resolve the same explicit Global Dependencies contract used by the
+        // process sandbox and validate GNU symbol versions before Blink is
+        // allowed to start. This does not infer anything from the producer: the
+        // requester DT_VERNEED metadata is checked against the selected ELF
+        // provider DT_VERDEF metadata byte-for-byte.
+        const closure = await materializeRuntimeDependencyClosure(target.image.interpreter, target.image.neededLibraries);
+        if (runGeneration.current !== generation) return null;
+        const symbolVersions = validateRuntimeSymbolVersions(target.file.name, target.file.bytes!, closure);
+        if (!symbolVersions.compatible) throw new Error(describeRuntimeSymbolVersionFailure(symbolVersions));
+
         session = await BlinkProcessSession.create(target.file, target.image, DEFAULT_EXECUTION_POLICY);
       } else {
         setPreflight(idleBlinkIsaPreflight());
