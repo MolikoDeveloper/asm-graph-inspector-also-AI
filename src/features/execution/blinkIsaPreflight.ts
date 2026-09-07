@@ -257,7 +257,7 @@ export function describeBlinkIsaAuditFailure(fileName: string, audit: BlinkIsaAu
   const first = audit.evidence[0];
   const families = audit.unsupportedFamilies.map(familyLabel).join(', ');
   const firstInstruction = first
-    ? ` First decoded unsupported instruction: 0x${first.address.toString(16)} ${first.mnemonic}${first.operands ? ` ${first.operands}` : ''} [${bytesLabel(first.bytes)}] in ${first.sectionName}.`
+    ? ` First static unsupported instruction found in executable bytes (not observed execution): 0x${first.address.toString(16)} ${first.mnemonic}${first.operands ? ` ${first.operands}` : ''} [${bytesLabel(first.bytes)}] in ${first.sectionName}.`
     : '';
   const skipped = audit.skippedBytes > 0
     ? ` Capstone skipped ${audit.skippedBytes.toLocaleString()} executable byte(s); the rejection is based only on positively decoded unsupported instructions.`
