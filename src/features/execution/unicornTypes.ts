@@ -56,6 +56,8 @@ export interface UnicornModule {
   X86_REG_R13: number;
   X86_REG_R14: number;
   X86_REG_R15: number;
+  X86_REG_FS_BASE: number;
+  X86_REG_GS_BASE: number;
   X86_REG_RFLAGS: number;
   arch_supported(arch: number): boolean | number;
   version(): number;
