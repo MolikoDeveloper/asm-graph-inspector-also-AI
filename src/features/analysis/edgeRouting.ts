@@ -117,11 +117,19 @@ function compactPoints(points: GraphPoint[]): GraphPoint[] {
   return result;
 }
 
-function chooseRoute(candidates: GraphPoint[][], nodes: PositionedGraphNode[], fromId: string, toId: string): GraphPoint[] {
-  let best = compactPoints(candidates[0]);
+function chooseRoute(
+  candidates: GraphPoint[][],
+  nodes: PositionedGraphNode[],
+  fromId: string,
+  toId: string,
+  minimumPoints = 2
+): GraphPoint[] {
+  const compactCandidates = candidates.map(compactPoints);
+  const eligible = compactCandidates.filter((candidate) => candidate.length >= minimumPoints);
+  const pool = eligible.length ? eligible : compactCandidates;
+  let best = pool[0];
   let bestScore = Number.POSITIVE_INFINITY;
-  for (const candidate of candidates) {
-    const compact = compactPoints(candidate);
+  for (const compact of pool) {
     const collisions = routeCollisionCount(compact, nodes, fromId, toId);
     const score = collisions * 1_000_000 + routeLength(compact) + Math.max(0, compact.length - 2) * 18;
     if (score < bestScore) {
@@ -250,7 +258,11 @@ export function routeGraphEdge(input: RouteInput): RoutedGraphEdge {
     candidates = sideBySideRoute(from, to, lane);
   }
 
-  const points = chooseRoute(candidates, nodes, from.id, to.id);
+  // Semantic loop/back-edges must retain a visible outer detour even when a
+  // direct segment happens to be collision-free. Otherwise compaction can turn
+  // a same-row back-edge into a two-point line through the CFG band, defeating
+  // the dedicated loop-lane contract and making cycles visually ambiguous.
+  const points = chooseRoute(candidates, nodes, from.id, to.id, loop ? 4 : 2);
   const last = points.at(-1)!;
   const previous = points.at(-2) ?? { x: last.x, y: last.y - 1 };
   return {
