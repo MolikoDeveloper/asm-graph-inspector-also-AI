@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { AlertCircle, CheckCircle2, TerminalSquare } from 'lucide-react';
 import type { AssemblyProblem } from '../features/analysis/asmParser';
+import type { BlinkIsaPreflightState } from '../features/execution/blinkIsaPreflight';
 import type { ExecutionSnapshot, ExecutionSupport } from '../features/execution/model';
 import { ExecutionConsole } from './ExecutionConsole';
 
@@ -15,11 +16,12 @@ function buildStarted(message: string | undefined): boolean {
   return !!message && (message.startsWith('Preparing real ELF for ') || (message.startsWith('Assembling ') && message.includes('pinned NASM + GNU ld')));
 }
 
-export function BottomPanel({ entries, problems, onSelectProblem, execution, executionSupport, executionTargetName, onExecutionPrepare, onExecutionRun, onExecutionPause, onExecutionStep, onExecutionReset }: {
+export function BottomPanel({ entries, problems, onSelectProblem, execution, executionPreflight, executionSupport, executionTargetName, onExecutionPrepare, onExecutionRun, onExecutionPause, onExecutionStep, onExecutionReset }: {
   entries: OutputEntry[];
   problems: AssemblyProblem[];
   onSelectProblem(problem: AssemblyProblem): void;
   execution: ExecutionSnapshot;
+  executionPreflight: BlinkIsaPreflightState;
   executionSupport: ExecutionSupport | null;
   executionTargetName: string | null;
   onExecutionPrepare(): void;
@@ -36,6 +38,9 @@ export function BottomPanel({ entries, problems, onSelectProblem, execution, exe
   useEffect(() => {
     if (execution.status !== 'idle') setTab('debug');
   }, [execution.status]);
+  useEffect(() => {
+    if (executionPreflight.status !== 'idle') setTab('debug');
+  }, [executionPreflight.status]);
   useEffect(() => {
     if (buildStarted(entries.at(-1)?.message)) setTab('debug');
   }, [entries]);
@@ -70,7 +75,7 @@ export function BottomPanel({ entries, problems, onSelectProblem, execution, exe
           )) : <div className="problems-empty"><CheckCircle2 size={14} /> No problems in the active file.</div>}
         </div>
       ) : null}
-      {tab === 'debug' ? <ExecutionConsole snapshot={execution} support={executionSupport} targetName={executionTargetName} buildEntries={entries} onPrepare={onExecutionPrepare} onRun={onExecutionRun} onPause={onExecutionPause} onStep={onExecutionStep} onReset={onExecutionReset} /> : null}
+      {tab === 'debug' ? <ExecutionConsole snapshot={execution} preflight={executionPreflight} support={executionSupport} targetName={executionTargetName} buildEntries={entries} onPrepare={onExecutionPrepare} onRun={onExecutionRun} onPause={onExecutionPause} onStep={onExecutionStep} onReset={onExecutionReset} /> : null}
     </section>
   );
 }
