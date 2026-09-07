@@ -61,7 +61,7 @@ function auditFor(name: string): BlinkIsaAudit {
 }
 
 const tolerant = await auditBlinkRuntimeDependencyIsa(closure, {
-  auditFile: async (file) => auditFor(file.name),
+  auditModule: async (runtimeModule) => auditFor(runtimeModule.fileName),
   auditInterpreterEntry: async () => null
 });
 
@@ -76,7 +76,7 @@ assert(advisory?.includes('GNU IFUNC'), 'advisory diagnostic should explain why 
 
 const loaderEntry = evidence(0x1a8e0, 'vbroadcastss');
 const blocked = await auditBlinkRuntimeDependencyIsa(closure, {
-  auditFile: async (file) => auditFor(file.name),
+  auditModule: async (runtimeModule) => auditFor(runtimeModule.fileName),
   auditInterpreterEntry: async (runtimeModule) => runtimeModule.fileName === 'ld-linux-x86-64.so.2' ? loaderEntry : null
 });
 
@@ -89,7 +89,7 @@ assert(failure.includes('0x1a8e0'), 'failure should expose exact mandatory entry
 assert(failure.includes('mandatory interpreter-entry evidence'), 'failure must distinguish blocker from optional DSO inventory');
 
 const dependencyEntryIgnored = await auditBlinkRuntimeDependencyIsa(closure, {
-  auditFile: async (file) => auditFor(file.name),
+  auditModule: async (runtimeModule) => auditFor(runtimeModule.fileName),
   auditInterpreterEntry: async (runtimeModule) => runtimeModule.fileName === 'libc.so.6' ? evidence(0x12340, 'vmovups') : null
 });
 assert(dependencyEntryIgnored.compatible, 'dependency ELF entry is not a mandatory process path and must not become a false blocker');
