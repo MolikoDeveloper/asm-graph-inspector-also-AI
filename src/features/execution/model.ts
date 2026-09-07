@@ -57,6 +57,16 @@ export interface ExecutionInstructionSnapshot {
   nodeId?: string;
 }
 
+export interface ExecutionRuntimeImageSnapshot {
+  name: string;
+  role: 'program' | 'interpreter' | 'dependency';
+  runtimeAddress: bigint;
+  imageAddress: bigint;
+  loadBias: bigint;
+  confidence: 'fixed-address' | 'cached-signature' | 'signature';
+  signatureBytes: number;
+}
+
 export interface ExecutionRuntimeDisassemblySnapshot {
   /**
    * Provider-owned live disassembly around the current process RIP.
@@ -66,6 +76,7 @@ export interface ExecutionRuntimeDisassemblySnapshot {
   source: 'blink-debugger';
   lines: string[];
   currentLine: number;
+  image: ExecutionRuntimeImageSnapshot | null;
 }
 
 export type ExecutionEvent =
