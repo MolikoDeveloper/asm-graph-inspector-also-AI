@@ -34,6 +34,51 @@ function probeStackWrite(module: UnicornModule, stackTop: number): { supported: 
   }
 }
 
+function probeHighRipLoaderPrologue(module: UnicornModule): { supported: boolean; error: string | null } {
+  const engine = new module.Unicorn(module.ARCH_X86, module.MODE_64);
+  const code = 0x0000_7f00_0001_8ef0;
+  const codePage = code & ~0xfff;
+  const dataPage = 0x0000_7f00_0003_7000;
+  const dataAddress = 0x0000_7f00_0003_7b2c;
+  const stackTop = 0x0000_7fff_ffff_ed60;
+  const page = 4096;
+  const prologue = [
+    0x55,                         // push rbp
+    0x48, 0x89, 0xe5,             // mov rsp, rbp
+    0x41, 0x57,                   // push r15
+    0x41, 0x56,                   // push r14
+    0x41, 0x55,                   // push r13
+    0x41, 0x54,                   // push r12
+    0x53,                         // push rbx
+    0x48, 0x81, 0xec, 0xb0, 0x00, 0x00, 0x00, // sub rsp, 0xb0
+    0x8b, 0x3d, 0x22, 0xec, 0x01, 0x00        // mov edi, [rip+0x1ec22] -> 0x7f0000037b2c
+  ];
+  try {
+    engine.mem_map(codePage, page, module.PROT_ALL);
+    engine.mem_write(code, prologue);
+    engine.mem_map(dataPage, page, module.PROT_READ | module.PROT_WRITE);
+    engine.mem_write(dataAddress, [0x08, 0x00, 0x00, 0x80]);
+    engine.mem_map(stackTop - page, page, module.PROT_READ | module.PROT_WRITE);
+    engine.reg_write_i64(module.X86_REG_RSP, BigInt(stackTop));
+    engine.reg_write_i64(module.X86_REG_RBP, BigInt(stackTop));
+    engine.reg_write_i64(module.X86_REG_R15, 0x1111n);
+    engine.reg_write_i64(module.X86_REG_R14, 0x2222n);
+    engine.reg_write_i64(module.X86_REG_R13, 0x3333n);
+    engine.reg_write_i64(module.X86_REG_R12, 0x4444n);
+    engine.reg_write_i64(module.X86_REG_RBX, 0x5555n);
+    engine.emu_start(code, code + prologue.length, 0, 0);
+    assert.equal(engine.reg_read_i64(module.X86_REG_RDI), 0x80000008n, 'high-RIP RIP-relative load must preserve the 32-bit feature word');
+    assert.equal(engine.reg_read_i64(module.X86_REG_RSP), BigInt(stackTop - 5 * 8 - 0xb0 - 8), 'loader prologue stack shape must match x86-64 pushes');
+    return { supported: true, error: null };
+  } catch (cause) {
+    let detail = cause instanceof Error ? cause.message : String(cause);
+    try { detail += ` (errno ${engine.errno()}: ${module.strerror(engine.errno())})`; } catch { /* observed exception is sufficient */ }
+    return { supported: false, error: detail };
+  } finally {
+    engine.close();
+  }
+}
+
 function probeHelperAdapter(module: UnicornModule): { supported: boolean; error: string | null } {
   const engine = new module.Unicorn(module.ARCH_X86, module.MODE_64);
   const code = 0x300000;
@@ -108,15 +153,17 @@ try {
 
   const lowStack = probeStackWrite(module, 0x7ff00000);
   const highStack = probeStackWrite(module, 0x0000_7fff_ffff_f000);
+  const highRipLoader = probeHighRipLoaderPrologue(module);
   const helperAdapter = probeHelperAdapter(module);
   const syscallHook = probeSyscallInsnHook(module);
   assert.equal(lowStack.supported, true, `low-address x86 stack must work: ${lowStack.error ?? ''}`);
   assert.equal(highStack.supported, true, `high-address x86 stack must work: ${highStack.error ?? ''}`);
+  assert.equal(highRipLoader.supported, true, `high-RIP loader prologue must work: ${highRipLoader.error ?? ''}`);
   assert.equal(helperAdapter.supported, true, `TCG helper adapter path must work: ${helperAdapter.error ?? ''}`);
   assert.equal(syscallHook.supported, true, `UC_HOOK_INSN syscall interception must work: ${syscallHook.error ?? ''}`);
 
   const summary = report.probes.map((probe) => `${probe.id}=${probe.supported ? 'yes' : 'no'}`).join(' ');
-  console.log(`Unicorn capability smoke: PASS · ${summary} low-stack=yes high-stack=yes helper-adapter=yes syscall-hook=yes`);
+  console.log(`Unicorn capability smoke: PASS · ${summary} low-stack=yes high-stack=yes high-rip-loader=yes helper-adapter=yes syscall-hook=yes`);
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }
