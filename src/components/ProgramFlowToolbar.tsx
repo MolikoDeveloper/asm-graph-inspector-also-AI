@@ -34,11 +34,11 @@ export function ProgramFlowToolbar({
           <span>Scope</span>
           <select value={scope} onChange={(event) => onScopeChange(event.currentTarget.value as ProgramFlowScope)}>
             <option value="focus">Focus</option>
-            <option value="visited">Visited flow</option>
+            <option value="visited">Connected calls</option>
             <option value="all">All groups</option>
           </select>
         </label>
-        <span className="program-flow-visited">{visitedCount} visited</span>
+        <span className="program-flow-visited">{visitedCount} inspected</span>
         <span className="program-flow-active" title={activeName}>Focus: {activeName}</span>
         <button type="button" onClick={onShowAll}><Plus size={12} />Show all</button>
         <button type="button" onClick={onHideAll}><Minus size={12} />Hide all</button>

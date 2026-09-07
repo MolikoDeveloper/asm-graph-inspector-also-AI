@@ -10,6 +10,7 @@ import {
 } from './model';
 import { materializeRuntimeDependencyClosure, type MaterializedRuntimeModule, type RuntimeDependencyClosure } from './runtimeDependencies';
 import { describeExecutionError, ExecutionProviderDiagnosticBuffer } from './providerDiagnostics';
+import { validateBlinkBuildProfile } from './blinkBuildProfile';
 
 const SIGTRAP = 5;
 const BLINK_PREEMPT = 40;
@@ -110,13 +111,19 @@ async function loadBlinkFactory(): Promise<{ factory: BlinkFactory; wasmUrl: str
   const base = new URL(import.meta.env.BASE_URL, window.location.href);
   const jsUrl = new URL('vendor/blink/blinkenlib.js', base).href;
   const wasmUrl = new URL('vendor/blink/blinkenlib.wasm', base).href;
+  const profileUrl = new URL('vendor/blink/build-profile.json', base).href;
   try {
+    const response = await fetch(profileUrl, { cache: 'no-store' });
+    if (!response.ok) throw new Error(`Blink build profile request failed with HTTP ${response.status}.`);
+    const validation = validateBlinkBuildProfile(await response.json());
+    if (!validation.ok) throw new Error(validation.reason ?? 'Blink build profile is incompatible.');
+
     const imported = await import(/* @vite-ignore */ jsUrl) as { default?: BlinkFactory };
     if (typeof imported.default !== 'function') throw new Error('vendored Blink module has no default Emscripten factory export.');
     return { factory: imported.default, wasmUrl };
   } catch (error: unknown) {
     const detail = error instanceof Error ? error.message : String(error);
-    throw new Error(`Blink/WASM Process Sandbox assets are unavailable (${detail}). Run \`bun run vendor:blink\` and rebuild.`);
+    throw new Error(`Blink/WASM Process Sandbox assets are unavailable or incompatible (${detail}). Run \`bun run vendor:blink\` with an active Emscripten toolchain, then rebuild.`);
   }
 }
 

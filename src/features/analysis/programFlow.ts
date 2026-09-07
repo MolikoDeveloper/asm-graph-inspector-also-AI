@@ -1,5 +1,5 @@
 import type { AnalysisGraph, GraphEdge, GraphNode } from './model';
-import type { BinaryAnalysisSummary, BinaryFunctionCandidate, ElfPltStub } from '../binary/model';
+import type { BinaryAnalysisSummary, BinaryFunctionCandidate, BinaryProgramTransfer, ElfPltStub } from '../binary/model';
 
 export type ProgramFlowScope = 'focus' | 'visited' | 'all';
 
@@ -35,6 +35,7 @@ interface RawTransfer {
   fromAddress: number;
   toAddress: number;
   kind: 'call' | 'branch';
+  label?: string;
 }
 
 function topLevelGroup(name: string, type: FlowEntity['type']): { id: string; label: string } {
@@ -91,6 +92,8 @@ export function buildProgramFlow({
   functions,
   pltStubs,
   summaries,
+  staticTransfers,
+  entryAddress,
   activeAddress,
   scope,
   hiddenGroups,
@@ -100,6 +103,8 @@ export function buildProgramFlow({
   functions: BinaryFunctionCandidate[];
   pltStubs: ElfPltStub[];
   summaries: BinaryAnalysisSummary[];
+  staticTransfers: BinaryProgramTransfer[];
+  entryAddress: number;
   activeAddress: number;
   scope: ProgramFlowScope;
   hiddenGroups: Set<string>;
@@ -116,6 +121,19 @@ export function buildProgramFlow({
   const touchedAddresses = new Set<number>([activeAddress]);
   const visitedAddresses = new Set<number>();
 
+  const staticTransferPairs = new Set<string>();
+  for (const transfer of staticTransfers) {
+    touchedAddresses.add(transfer.fromAddress);
+    touchedAddresses.add(transfer.toAddress);
+    staticTransferPairs.add(`${transfer.fromAddress}:${transfer.toAddress}:${transfer.kind === 'tail-call' ? 'branch' : 'call'}`);
+    transfers.push({
+      fromAddress: transfer.fromAddress,
+      toAddress: transfer.toAddress,
+      kind: transfer.kind === 'tail-call' ? 'branch' : 'call',
+      label: transfer.kind === 'startup' ? 'startup' : transfer.kind === 'tail-call' ? 'tail' : 'call'
+    });
+  }
+
   for (const summary of summaries) {
     visitedAddresses.add(summary.rootAddress);
     touchedAddresses.add(summary.rootAddress);
@@ -127,10 +145,13 @@ export function buildProgramFlow({
       const targetAddress = plt?.address ?? containingFunction?.address ?? null;
       if (targetAddress === null) continue;
       touchedAddresses.add(targetAddress);
+      const kind = instruction.controlFlow === 'call' ? 'call' : 'branch';
+      if (staticTransferPairs.has(`${summary.rootAddress}:${targetAddress}:${kind}`)) continue;
       transfers.push({
         fromAddress: summary.rootAddress,
         toAddress: targetAddress,
-        kind: instruction.controlFlow === 'call' ? 'call' : 'branch'
+        kind,
+        label: instruction.controlFlow === 'call' ? 'call' : 'jump'
       });
     }
   }
@@ -202,7 +223,7 @@ export function buildProgramFlow({
 
   const ensureEntityNode = (entity: FlowEntity): string | null => {
     if (!includedGroups.has(entity.groupId)) return null;
-    if (!expandedGroups.has(entity.groupId)) {
+    if (scope === 'all' && !expandedGroups.has(entity.groupId)) {
       const id = ensureGroupNode(entity.groupId);
       nodeIdByAddress.set(entity.address, id);
       return id;
@@ -243,7 +264,7 @@ export function buildProgramFlow({
     }
   }
 
-  const aggregated = new Map<string, { from: string; to: string; calls: number; branches: number }>();
+  const aggregated = new Map<string, { from: string; to: string; calls: number; branches: number; startup: number; tail: number }>();
   for (const transfer of transfers) {
     if (scope !== 'all' && (!scopedAddresses.has(transfer.fromAddress) || !scopedAddresses.has(transfer.toAddress))) continue;
     const sourceEntity = entityByAddress.get(transfer.fromAddress);
@@ -253,20 +274,26 @@ export function buildProgramFlow({
     const to = ensureEntityNode(targetEntity);
     if (!from || !to || from === to) continue;
     const key = `${from}->${to}`;
-    const current = aggregated.get(key) ?? { from, to, calls: 0, branches: 0 };
+    const current = aggregated.get(key) ?? { from, to, calls: 0, branches: 0, startup: 0, tail: 0 };
     if (transfer.kind === 'call') current.calls += 1;
     else current.branches += 1;
+    if (transfer.label === 'startup') current.startup += 1;
+    if (transfer.label === 'tail') current.tail += 1;
     aggregated.set(key, current);
   }
 
   for (const [key, transfer] of aggregated) {
     const total = transfer.calls + transfer.branches;
     const edgeKind: GraphEdge['kind'] = transfer.calls > 0 && transfer.branches === 0 ? 'call' : 'branch';
-    const label = transfer.calls && transfer.branches
-      ? `${transfer.calls} call${transfer.calls === 1 ? '' : 's'} · ${transfer.branches} jump${transfer.branches === 1 ? '' : 's'}`
-      : transfer.calls
-        ? (total === 1 ? 'call' : `${total} calls`)
-        : (total === 1 ? 'jump' : `${total} jumps`);
+    const label = transfer.startup
+      ? 'libc startup → main'
+      : transfer.tail && transfer.calls === 0
+        ? (total === 1 ? 'tail call' : `${total} tail calls`)
+        : transfer.calls && transfer.branches
+          ? `${transfer.calls} call${transfer.calls === 1 ? '' : 's'} · ${transfer.branches} jump${transfer.branches === 1 ? '' : 's'}`
+          : transfer.calls
+            ? (total === 1 ? 'call' : `${total} calls`)
+            : (total === 1 ? 'jump' : `${total} jumps`);
     edges.push({ id: `${fileId}:program-flow:edge:${key}`, from: transfer.from, to: transfer.to, kind: edgeKind, label });
   }
 
@@ -279,13 +306,13 @@ export function buildProgramFlow({
       nodes,
       edges,
       labels,
-      diagnostics: [`Program flow (${scope}): ${visitedAddresses.size} visited function(s), ${nodes.length} visible node(s), ${edges.length} visible interprocedural edge(s).`],
+      diagnostics: [`Program flow (${scope}): ${staticTransfers.length} static transfer(s), ${visitedAddresses.size} inspected function(s), ${nodes.length} visible node(s), ${edges.length} visible interprocedural edge(s).`],
       sourceKind: 'raw-elf-capstone',
       architecture: 'x86-64',
-      entryAddress: activeAddress,
+      entryAddress,
       viewKind: 'program-flow',
-      functionAddress: activeAddress,
-      functionName: activeEntity?.name
+      functionAddress: entryAddress,
+      functionName: entityByAddress.get(entryAddress)?.name ?? activeEntity?.name
     },
     groups,
     actions,

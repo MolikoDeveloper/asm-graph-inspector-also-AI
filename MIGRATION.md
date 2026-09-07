@@ -118,3 +118,18 @@ Execution rendering is now trace-driven rather than selection-only. `ExecutionEv
 The execution core now has a headless API in `src/features/execution/headless/runner.ts`. ASM source and static ELF execution can be driven synchronously from tests, CI or a CLI without constructing React state, a canvas, a project workspace, or browser DOM nodes. The UI remains a consumer of execution snapshots; it is no longer required to produce them.
 
 The Bun entry point `scripts/execute.ts` auto-detects ELF magic. ASM files use the source-semantic x86-64 provider and Linux Lite. Static fixed-address ELF uses the bounded x86-64 provider plus vendored Capstone WASM loaded by `scripts/headless-capstone.ts`. Dynamic ELF is still delegated conceptually to `blink-process`; headless execution rejects it explicitly until that provider has reliable non-UI lifecycle semantics.
+
+## V16: recursive dependency preflight + binary program call graph
+
+Binary analysis now resolves the same `PT_INTERP` + recursive `DT_NEEDED` closure that process execution materializes. The Binary Map no longer stops at the executable's direct `DT_NEEDED` list: interpreter, direct dependencies and transitive dependencies are shown with parent/depth evidence, while older IndexedDB library entries are re-inspected lazily so users do not need to re-import them. Runtime materialization remains byte-owning and sandbox-local; this analysis preflight does not touch an implicit host filesystem.
+
+`Program flow` is now an actual interprocedural call graph instead of a history of functions the user happened to open. Prepared binary analysis decodes discovered functions under a bounded instruction/function budget, records direct CALL and proven interprocedural tail-JMP edges, and recognizes the narrow `_start` → `__libc_start_main(main)` ABI handoff from relocation + RDI evidence. Connected-call scope renders function/PLT nodes directly rather than collapsing the common `(root)` namespace into one empty-looking node. Layout is rooted at the ELF entry independently of the function-detail picker, keeps that entry call lineage in the first column, and orders siblings by address so `_start → main → application function → PLT` reads top-to-bottom.
+
+
+## V17: baseline-compatible Blink source build
+
+The dynamic Process Sandbox no longer accepts the precompiled x86-64-playground Blink payload. That artifact is configured with `--disable-all`, which disables x87/FPU in the pinned fork. Blink's CPUID implementation only advertises the FPU bit when x87 is enabled, so contemporary glibc can reject an otherwise `x86-64-baseline` `libc.so.6` with `CPU ISA level is lower than required` before `main` is reached.
+
+`bun run vendor:blink` now checks out the pinned Blink fork and builds the Emscripten JS/WASM pair locally from source with `--disable-all --enable-x87 --enable-mmx --enable-nonposix`. JIT intentionally remains disabled. The build emits `build-profile.json`; `blink-process` validates that profile before importing the module, so stale upstream-prebuilt assets fail fast instead of exposing a CPU contract lower than baseline.
+
+This does not bundle glibc into the repository. Dynamic guest libraries continue to come from Global Dependencies. A minimal glibc `puts()` executable normally needs the matching `ld-linux-x86-64.so.2` and `libc.so.6` bytes from one host installation; additional direct/transitive `DT_NEEDED` modules are resolved recursively.

@@ -124,3 +124,19 @@ Manual browser QA after applying this slice:
 - The real headless Capstone smoke must instantiate `public/vendor/capstone/capstone_x86.wasm` without a DOM and execute the same ELF fixture.
 - A dynamic ELF requiring `blink-process` must fail before execution with an explicit headless-provider diagnostic. It must never be silently routed through the bounded provider.
 - `bun run execute -- <path> --json` must serialize registers as hexadecimal strings rather than leaking JavaScript `bigint` values into JSON.
+
+## V16 call graph / dependency closure validation
+
+- Core binary-analysis/dependency modules strict-TypeScript check: PASS with the system compiler.
+- Program-flow smoke: PASS; connected-call scope renders `_start`, `main`, and `worker` as individual function nodes and preserves a `libc startup → main` edge without a compact `(root)` placeholder.
+- Real uploaded ELF projection check: PASS against the 15,656-byte `ray_test`; Capstone discovers 10 symbol-backed functions and the new call graph recovers `_start → main → vzed.module.start.0 → puts@plt`, plus the independent destructor/register-clone subgraphs, with no false fall-through edge after `frame_dummy`'s tail JMP.
+- Recursive dependency smoke: PASS; `PT_INTERP + libm.so.6 → libc.so.6 → ld-linux-x86-64.so.2` is resolved and the interpreter is deduplicated when it reappears transitively.
+- Host libc/loader closure check: PASS; real `libc.so.6` is inspected as needing `ld-linux-x86-64.so.2` and the preflight reports the two-module closure correctly.
+
+
+## Blink baseline build profile (v17)
+
+- `tests/execution/blink-build-profile-smoke.ts` accepts only the pinned `asm-graph-inspector-linux-x86-64-baseline-v1` profile and rejects x87-disabled or stale-commit manifests.
+- `blink-process` fetches `vendor/blink/build-profile.json` before importing `blinkenlib.js`; missing/stale upstream assets produce an actionable `bun run vendor:blink` error.
+- `scripts/vendor-blink.sh` is syntax-checked and builds from pinned `robalb/blink` source using the upstream Emscripten module contract plus `--enable-x87 --enable-mmx --enable-nonposix` on top of the browser-safe `--disable-all` baseline. JIT remains disabled.
+- This isolated patch environment cannot execute the Emscripten source build itself unless an emsdk toolchain is installed. Final dynamic-glibc validation must therefore be run in the project environment after `bun run vendor:blink`.

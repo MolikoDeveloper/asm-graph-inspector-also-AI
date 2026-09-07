@@ -1,0 +1,23 @@
+{
+  "schema": "asm-graph.blink-build-profile/v1",
+  "profile": "asm-graph-inspector-linux-x86-64-baseline-v1",
+  "blinkCommit": "71487ee40869b3ccac6cac9bb7a45d71484978d6",
+  "cpu": {
+    "architecture": "x86-64",
+    "isaLevel": "x86-64-baseline",
+    "x87": true,
+    "mmx": true,
+    "sse": true,
+    "sse2": true
+  },
+  "build": {
+    "disableJit": true,
+    "nonPosixLinuxApis": true,
+    "configure": ["--disable-all", "--enable-x87", "--enable-mmx", "--enable-nonposix"],
+    "emscripten": "emcc (Emscripten gcc/clang-like replacement + linker emulating GNU ld) 3.1.64 (a1fe3902bf73a3802eae0357d273d0e37ea79898)"
+  },
+  "artifacts": {
+    "jsSha256": "687b3d3cb033175d245c324c394d4587d9f459fb4f732eb2b340c097a8619063",
+    "wasmSha256": "3228cf0ff5ec64725a18a9ba3195cc84c17a37caf5f036008a16a2939a661cf7"
+  }
+}

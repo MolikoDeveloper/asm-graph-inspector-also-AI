@@ -1,50 +1,97 @@
 #!/usr/bin/env bash
 set -euo pipefail
 
-PLAYGROUND_COMMIT='d617f6a19879157c1debbe0454b6c4cff2ebe094'
+# Build the Process Sandbox from the pinned Blink fork instead of downloading
+# x86-64-playground's precompiled --disable-all artifact. That upstream artifact
+# disables x87, which makes Blink advertise a CPU below glibc's x86-64-baseline
+# requirement even when the uploaded libc itself only requires baseline.
+
 BLINK_COMMIT='71487ee40869b3ccac6cac9bb7a45d71484978d6'
-BASE="https://raw.githubusercontent.com/robalb/x86-64-playground/${PLAYGROUND_COMMIT}"
-BLINK_BASE="https://raw.githubusercontent.com/robalb/blink/${BLINK_COMMIT}"
+BLINK_REPO='https://github.com/robalb/blink.git'
+PROFILE='asm-graph-inspector-linux-x86-64-baseline-v1'
+PROFILE_SCHEMA='asm-graph.blink-build-profile/v1'
 OUT='public/vendor/blink'
+
+requirements=(git make emconfigure emmake emcc sha256sum)
+for cmd in "${requirements[@]}"; do
+  if ! command -v "$cmd" >/dev/null 2>&1; then
+    echo "Blink source build requires '$cmd'." >&2
+    echo "Install/activate Emscripten (the upstream browser fork was tested with emsdk 3.1.64), then retry." >&2
+    exit 1
+  fi
+done
+
 mkdir -p "$OUT"
+work="$(mktemp -d "${TMPDIR:-/tmp}/asm-graph-blink.XXXXXX")"
+cleanup() { rm -rf "$work"; }
+trap cleanup EXIT
 
-fetch() {
-  local url="$1" output="$2"
-  curl --fail --location --silent --show-error "$url" --output "$output"
+printf 'Fetching Blink %s...\n' "$BLINK_COMMIT"
+git -C "$work" init -q
+git -C "$work" remote add origin "$BLINK_REPO"
+git -C "$work" fetch -q --depth 1 origin "$BLINK_COMMIT"
+git -C "$work" checkout -q --detach FETCH_HEAD
+
+# Keep the Emscripten contract aligned with robalb/x86-64-playground, but use a
+# CPU/process profile suitable for contemporary baseline glibc:
+#   --disable-all     browser-safe/minimal starting point
+#   --enable-x87      CPUID FPU bit + x87 implementation (required by baseline)
+#   --enable-mmx      advertised MMX must match an enabled implementation
+#   --enable-nonposix glibc/ld-linux need Linux-specific syscall surfaces
+# JIT intentionally remains disabled by --disable-all; browser execution is an
+# interpreter/debugger and must not claim executable host memory.
+exported_runtime_methods='["UTF8ToString","stringToNewUTF8","AsciiToString","FS","callMain","addFunction","wasmExports"]'
+emscripten_flags="-sENVIRONMENT=web -sALLOW_MEMORY_GROWTH=1 -sALLOW_TABLE_GROWTH=1 -sEXIT_RUNTIME=0 -sEXPORT_ES6=1 -sMODULARIZE -sEXPORT_NAME=blinkenlib -sEXPORTED_RUNTIME_METHODS='$exported_runtime_methods'"
+cppflags='-DHTML -D_FILE_OFFSET_BITS=64 -D_DARWIN_C_SOURCE -D_DEFAULT_SOURCE -D_BSD_SOURCE -D_GNU_SOURCE'
+
+(
+  cd "$work"
+  emconfigure ./configure \
+    --disable-all \
+    --enable-x87 \
+    --enable-mmx \
+    --enable-nonposix \
+    LDFLAGS="$emscripten_flags" \
+    CPPFLAGS="$cppflags"
+  emmake make o//blink/blinkenlib.js
+)
+
+cp "$work/o/blink/blinkenlib.js" "$OUT/blinkenlib.js"
+cp "$work/o/blink/blinkenlib.wasm" "$OUT/blinkenlib.wasm"
+cp "$work/LICENSE" "$OUT/LICENSE.blink.txt"
+
+js_sha="$(sha256sum "$OUT/blinkenlib.js" | awk '{print $1}')"
+wasm_sha="$(sha256sum "$OUT/blinkenlib.wasm" | awk '{print $1}')"
+emcc_version="$(emcc --version | head -n 1 | sed 's/"/\\"/g')"
+
+cat > "$OUT/build-profile.json" <<JSON
+{
+  "schema": "$PROFILE_SCHEMA",
+  "profile": "$PROFILE",
+  "blinkCommit": "$BLINK_COMMIT",
+  "cpu": {
+    "architecture": "x86-64",
+    "isaLevel": "x86-64-baseline",
+    "x87": true,
+    "mmx": true,
+    "sse": true,
+    "sse2": true
+  },
+  "build": {
+    "disableJit": true,
+    "nonPosixLinuxApis": true,
+    "configure": ["--disable-all", "--enable-x87", "--enable-mmx", "--enable-nonposix"],
+    "emscripten": "$emcc_version"
+  },
+  "artifacts": {
+    "jsSha256": "$js_sha",
+    "wasmSha256": "$wasm_sha"
+  }
 }
+JSON
 
-fetch "$BASE/webapp/src/assets/blinkenlib.js" "$OUT/blinkenlib.js"
-fetch "$BASE/webapp/src/assets/blinkenlib.wasm" "$OUT/blinkenlib.wasm"
-fetch "$BASE/LICENSE.txt" "$OUT/LICENSE.x86-64-playground.txt"
-fetch "$BLINK_BASE/LICENSE" "$OUT/LICENSE.blink.txt"
-
-check_blob() {
-  local file="$1" expected="$2"
-  local actual
-  actual="$(git hash-object "$file")"
-  if [[ "$actual" != "$expected" ]]; then
-    echo "Blink vendor integrity failure: $file" >&2
-    echo "expected git blob $expected" >&2
-    echo "actual   git blob $actual" >&2
-    exit 1
-  fi
-}
-
-check_size() {
-  local file="$1" expected="$2"
-  local actual
-  actual="$(wc -c < "$file" | tr -d ' ')"
-  if [[ "$actual" != "$expected" ]]; then
-    echo "Blink vendor size mismatch: $file expected=$expected actual=$actual" >&2
-    exit 1
-  fi
-}
-
-check_blob "$OUT/blinkenlib.js" '32e194ea123f41601b647422a288dce185a84acf'
-check_blob "$OUT/blinkenlib.wasm" 'da021e8215a9b0377282c439c72db7f8863f61eb'
-check_blob "$OUT/LICENSE.x86-64-playground.txt" '709a034739fc1429460a8322c7758a71ec0cea53'
-check_blob "$OUT/LICENSE.blink.txt" '421b40f5cffc6e4f52b18f1dfa100218a882dc35'
-check_size "$OUT/blinkenlib.js" 204023
-check_size "$OUT/blinkenlib.wasm" 246871
-
-printf 'Vendored Blink Process Sandbox assets:\n  x86-64-playground %s\n  blink fork         %s\n' "$PLAYGROUND_COMMIT" "$BLINK_COMMIT"
+printf 'Built ASM Graph Inspector Blink Process Sandbox:\n'
+printf '  source  %s\n' "$BLINK_COMMIT"
+printf '  profile %s\n' "$PROFILE"
+printf '  JS      %s\n' "$js_sha"
+printf '  WASM    %s\n' "$wasm_sha"

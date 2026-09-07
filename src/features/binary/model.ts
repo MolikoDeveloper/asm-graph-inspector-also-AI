@@ -257,6 +257,15 @@ export interface ElfPltStub {
   evidence: 'capstone-rip-memory+raw-elf-relocation';
 }
 
+
+export interface BinaryProgramTransfer {
+  fromAddress: number;
+  toAddress: number;
+  kind: 'call' | 'tail-call' | 'startup';
+  callsiteAddress: number;
+  evidence: string;
+}
+
 export interface BinaryAnalysisSummary {
   image: LoadedImage;
   rootName: string;
@@ -266,4 +275,6 @@ export interface BinaryAnalysisSummary {
   functions: BinaryFunctionCandidate[];
   pltStubs: ElfPltStub[];
   dependencies: GlobalDependencyResolution[];
+  programTransfers: BinaryProgramTransfer[];
+  programDiagnostics: string[];
 }

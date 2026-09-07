@@ -50,6 +50,16 @@ function layoutProgramFlow(graph: AnalysisGraph): PositionedGraphNode[] {
   }
 
   const active = nodes.find((node) => graph.functionAddress !== undefined && node.address === graph.functionAddress);
+  const activeReachable = new Set<string>();
+  if (active) {
+    const activeQueue = [active.id];
+    for (let cursor = 0; cursor < activeQueue.length; cursor += 1) {
+      const id = activeQueue[cursor];
+      if (activeReachable.has(id)) continue;
+      activeReachable.add(id);
+      for (const to of outgoing.get(id) ?? []) if (!activeReachable.has(to)) activeQueue.push(to);
+    }
+  }
   const roots = nodes.filter((node) => (incomingCount.get(node.id) ?? 0) === 0);
   if (!roots.length && active) roots.push(active);
   if (!roots.length) roots.push(nodes[0]);
@@ -83,8 +93,13 @@ function layoutProgramFlow(graph: AnalysisGraph): PositionedGraphNode[] {
   for (const depth of [...byLayer.keys()].sort((a, b) => a - b)) {
     const list = byLayer.get(depth)!;
     list.sort((a, b) => {
+      const activeLineageDelta = Number(activeReachable.has(b.id)) - Number(activeReachable.has(a.id));
+      if (activeLineageDelta) return activeLineageDelta;
       const activeDelta = Number(b.address === graph.functionAddress) - Number(a.address === graph.functionAddress);
-      return activeDelta || a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' });
+      if (activeDelta) return activeDelta;
+      const addressA = a.address ?? Number.MAX_SAFE_INTEGER;
+      const addressB = b.address ?? Number.MAX_SAFE_INTEGER;
+      return addressA - addressB || a.title.localeCompare(b.title, undefined, { numeric: true, sensitivity: 'base' });
     });
     const columns = Math.min(4, Math.max(1, list.length));
     const rows = Math.ceil(list.length / columns);

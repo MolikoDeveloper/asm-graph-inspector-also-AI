@@ -77,7 +77,7 @@ export function AnalysisDock({
   const [projection, setProjection] = useState<DataflowProjection>('flow');
   const [disassemblyView, setDisassemblyView] = useState<DisassemblyView>('functions');
   const [cfgView, setCfgView] = useState<CfgView>('program');
-  const [programScope, setProgramScope] = useState<ProgramFlowScope>('focus');
+  const [programScope, setProgramScope] = useState<ProgramFlowScope>('visited');
   const [hiddenGroups, setHiddenGroups] = useState<Set<string>>(() => new Set());
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   const [summaryHistory, setSummaryHistory] = useState<Map<number, BinaryAnalysisSummary>>(() => new Map());
@@ -92,7 +92,7 @@ export function AnalysisDock({
     setSummaryHistory(new Map());
     setHiddenGroups(new Set());
     setExpandedGroups(new Set());
-    setProgramScope('focus');
+    setProgramScope('visited');
   }, [binaryFileId]);
 
   useEffect(() => {
@@ -116,6 +116,8 @@ export function AnalysisDock({
       functions: binarySummary.functions,
       pltStubs: binarySummary.pltStubs,
       summaries: [...history.values()],
+      staticTransfers: binarySummary.programTransfers,
+      entryAddress: binarySummary.image.entry,
       activeAddress: binarySummary.rootAddress,
       scope: programScope,
       hiddenGroups,
@@ -253,7 +255,7 @@ export function AnalysisDock({
             />
           ) : null}
           <div className="analysis-dock analysis-dock-cfg" style={graphColumns}>
-            <GraphPanel graph={cfgGraph} title={binarySummary && cfgView === 'program' ? `Program flow · ${programFlow?.visitedCount ?? 0} visited` : graph?.viewKind === 'function-cfg' ? 'Function CFG' : 'Flow graph'} grid={grid} labels={labels} selectedId={selectedId} focusId={executionNodeId} trace={cfgView === 'function' || !binarySummary ? executionTrace : null} onSelect={selectNode} onActivate={activateNode} onClear={onClearGraph} />
+            <GraphPanel graph={cfgGraph} title={binarySummary && cfgView === 'program' ? `Program calls · ${binarySummary.programTransfers.length} edges` : graph?.viewKind === 'function-cfg' ? 'Function CFG' : 'Flow graph'} grid={grid} labels={labels} selectedId={selectedId} focusId={executionNodeId} trace={cfgView === 'function' || !binarySummary ? executionTrace : null} onSelect={selectNode} onActivate={activateNode} onClear={onClearGraph} />
             <ResizeHandle orientation="vertical" onDelta={(delta) => setInspectorWidth((width) => Math.min(520, Math.max(190, width - delta)))} />
             <InspectorPanel graph={cfgGraph} selectedId={selectedId} stale={analysisStale} onNavigate={onNavigate} />
           </div>

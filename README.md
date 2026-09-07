@@ -59,16 +59,26 @@ The Debug Console now has three explicit browser execution providers:
 - `asm-source-x86-64` executes NASM-style ASM source directly with synthetic source PCs, x86-64 register/stack/data state, bounded stepping/run and a minimal Linux Lite stdio/exit syscall surface. It does not require ELF, libc or Blink.
 - `bounded-x86-64` executes fixed-address static ELF64 x86-64 directly from authoritative bytes and is kept as a small deterministic smoke/debug provider.
 - `blink-process` is the Process Sandbox for PIE and dynamically linked x86-64 Linux ELF. It materializes the complete `PT_INTERP` / `DT_NEEDED` dependency closure from **Global Dependencies**, mounts those bytes in Blink's private MEMFS, then lets Blink perform the Linux ELF/dynamic-loader work.
+- Binary Map preflights that closure recursively and distinguishes interpreter, direct `DT_NEEDED`, and transitive requirements. Program flow separately builds a bounded ELF-wide function call graph, so the canvas can show connected functions (`_start → main → ... → PLT`) instead of only the currently selected function CFG.
 
 Select an ASM source file or an analyzed binary and use **Run → Run Active Program (F6)** or **Step Instruction (F10)**. No provider executes a host program or inherits the host filesystem.
 
-Blink is vendored as pinned same-origin JS/WASM assets. Fetch the exact audited payload before the first Blink build:
+Blink is vendored as a pinned same-origin JS/WASM **source build**. Build it before the first dynamic-ELF run:
 
 ```bash
 bun run vendor:blink
 ```
 
-The vendoring script pins both the browser wrapper and its Blink fork commit, verifies Git blob identities/sizes and copies the ISC license texts beside the assets.
+The script checks out the pinned `robalb/blink` fork and builds the browser module with Emscripten. Unlike the x86-64-playground prebuilt `--disable-all` artifact, ASM Graph Inspector re-enables x87/FPU, MMX and Linux non-POSIX APIs so the virtual CPU satisfies glibc's `x86-64-baseline` startup contract while JIT remains disabled. The runtime validates `public/vendor/blink/build-profile.json` and rejects stale/incompatible assets.
+
+For a dynamically linked glibc ELF, upload its actual loader/runtime libraries to **Global Dependencies**. For the minimal `puts()` fixture on a typical Debian/Ubuntu-style system this means the resolved bytes for:
+
+```text
+/lib64/ld-linux-x86-64.so.2
+/lib/x86_64-linux-gnu/libc.so.6
+```
+
+Do **not** upload `linux-vdso.so.1`; it is a kernel-provided virtual image, not a normal filesystem dependency. If the ELF adds `libm.so.6`, `libstdc++.so.6`, or other `DT_NEEDED` entries, upload those too. The dependency resolver follows their transitive `DT_NEEDED` closure automatically.
 
 Process execution is still sandbox work in progress: interactive stdin, VFS/syscall policy interception, runtime module/load-bias observations and graphics/window integration are not complete. A program can therefore load successfully and later fail when it asks Linux/environment services the sandbox does not yet provide.
 

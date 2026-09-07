@@ -28,7 +28,7 @@ export function GlobalDependenciesSettings({ controller }: { controller: GlobalD
             <span className={entry.kind === 'file' ? 'dependency-kind file' : 'dependency-kind directory'}>{entry.kind === 'file' ? 'ELF' : 'DIR'}</span>
             <div className="dependency-main">
               <strong>{entry.name}</strong>
-              {entry.kind === 'file' ? <small>{entry.soname ? `SONAME ${entry.soname}` : 'Imported library file'} · {entry.size.toLocaleString()} bytes</small> : <small>Authorized host library root · shared by all projects</small>}
+              {entry.kind === 'file' ? <small>{entry.soname ? `SONAME ${entry.soname}` : 'Imported library file'} · {entry.size.toLocaleString()} bytes{entry.neededLibraries?.length ? ` · needs ${entry.neededLibraries.join(', ')}` : ''}</small> : <small>Authorized host library root · shared by all projects</small>}
             </div>
             {entry.kind === 'directory' ? <button className="dependency-permission" onClick={() => void controller.requestPermission(entry.id)}>Reconnect</button> : null}
             <IconButton title={`Remove ${entry.name}`} aria-label={`Remove ${entry.name}`} onClick={() => void controller.remove(entry.id)}><X size={14} /></IconButton>

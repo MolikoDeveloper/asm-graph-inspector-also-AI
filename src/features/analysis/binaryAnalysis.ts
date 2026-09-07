@@ -15,8 +15,9 @@ import type { AnalysisGraph, GraphEdge, GraphNode } from './model';
 import { decodeX86_64 } from '../capstone/capstoneDecoder';
 import type { CapstoneModule } from '../capstone/types';
 import { buildFunctionCfg } from './cfg';
-import { resolveGlobalDependencies } from '../dependencies/globalDependencyResolver';
+import { resolveGlobalDependencyClosure } from '../dependencies/globalDependencyResolver';
 import type { GlobalDependencyResolution } from '../dependencies/model';
+import { discoverProgramCallGraph } from './programCallGraph';
 
 export interface BinaryAnalysisResult {
   graph: AnalysisGraph;
@@ -36,6 +37,8 @@ interface PreparedBinaryAnalysis {
   linkage: ReturnType<typeof recoverPltStubs>;
   capstoneVersion: string;
   dependencies: GlobalDependencyResolution[];
+  programTransfers: import('../binary/model').BinaryProgramTransfer[];
+  programDiagnostics: string[];
 }
 
 const preparedBinaryCache = new Map<string, PreparedBinaryAnalysis>();
@@ -54,8 +57,9 @@ async function prepareBinary(file: ProjectFile): Promise<PreparedBinaryAnalysis>
   const discovery = discoverBinaryFunctions(image, file.bytes, module);
   const linkage = recoverPltStubs(image, file.bytes, module);
   const encodedVersion = module.version();
-  const dependencies = await resolveGlobalDependencies(image.neededLibraries);
-  const prepared = { signature, image, module, discovery, linkage, capstoneVersion: `${encodedVersion >> 8}.${encodedVersion & 0xff}`, dependencies };
+  const dependencies = await resolveGlobalDependencyClosure(image.interpreter, image.neededLibraries);
+  const programCallGraph = discoverProgramCallGraph(image, file.bytes, module, discovery.functions, linkage.stubs);
+  const prepared = { signature, image, module, discovery, linkage, capstoneVersion: `${encodedVersion >> 8}.${encodedVersion & 0xff}`, dependencies, programTransfers: programCallGraph.transfers, programDiagnostics: programCallGraph.diagnostics };
   preparedBinaryCache.set(file.id, prepared);
   return prepared;
 }
@@ -135,7 +139,7 @@ function blockKind(instructions: CanonicalInstruction[]): GraphNode['kind'] {
 
 export async function analyzeBinary(file: ProjectFile, options: BinaryAnalysisOptions = {}): Promise<BinaryAnalysisResult> {
   if (file.kind !== 'binary' || !file.bytes) throw new Error('Binary analysis requires imported bytes.');
-  const { image, module, discovery, linkage, capstoneVersion, dependencies } = await prepareBinary(file);
+  const { image, module, discovery, linkage, capstoneVersion, dependencies, programTransfers, programDiagnostics } = await prepareBinary(file);
   const requested = options.functionAddress === undefined ? null : candidateContaining(discovery.functions, options.functionAddress);
   const root = requested ?? candidateContaining(discovery.functions, image.entry) ?? discovery.functions[0] ?? fallbackRoot(image);
   const instructions = decodeRoot(image, file.bytes, module, root);
@@ -203,6 +207,7 @@ export async function analyzeBinary(file: ProjectFile, options: BinaryAnalysisOp
     `Unwind: ${image.unwind.cies.length} CIE(s), ${image.unwind.fdes.length} preferred FDE range(s), ${image.unwind.cfiRowCount} decoded CFI row(s), ${image.unwind.errors.length + image.unwind.cfiDiagnostics.length} diagnostic(s).`,
     ...discovery.diagnostics,
     ...linkage.diagnostics,
+    ...programDiagnostics,
     `Selected function: ${root.name} @ 0x${root.address.toString(16)} · ${instructions.length} canonical instruction(s).`,
     `CFG: ${cfg.blocks.length} basic block(s), ${cfg.edges.length} local edge(s), ${cfg.reachableBlockIds.size} reachable block(s), ${cfg.backEdges.length} back edge(s).`,
     `Canonical decode: Capstone ${capstoneVersion}; pinned x86 operand-detail layout validated per instruction.`
@@ -213,7 +218,7 @@ export async function analyzeBinary(file: ProjectFile, options: BinaryAnalysisOp
   if (dependencies.length) {
     const resolvedCount = dependencies.filter((dependency) => dependency.status === 'resolved').length;
     const permissionCount = dependencies.filter((dependency) => dependency.status === 'permission-required').length;
-    diagnostics.push(`Global dependencies: ${resolvedCount}/${dependencies.length} resolved${permissionCount ? `, ${permissionCount} require browser permission` : ''}.`);
+    diagnostics.push(`Runtime dependency closure: ${resolvedCount}/${dependencies.length} resolved${permissionCount ? `, ${permissionCount} require browser permission` : ''}.`);
     for (const dependency of dependencies) {
       if (dependency.status === 'resolved') diagnostics.push(`Dependency resolved: ${dependency.requestedName} → ${dependency.sourceName ?? dependency.fileName ?? 'global dependency'}.`);
       else if (dependency.status === 'permission-required') diagnostics.push(`Dependency permission required: ${dependency.requestedName} via ${dependency.sourceName ?? 'global directory'}.`);
@@ -243,7 +248,9 @@ export async function analyzeBinary(file: ProjectFile, options: BinaryAnalysisOp
       instructions,
       functions: discovery.functions,
       pltStubs: linkage.stubs,
-      dependencies
+      dependencies,
+      programTransfers,
+      programDiagnostics
     },
     capstoneVersion
   };

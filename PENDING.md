@@ -61,6 +61,8 @@
 - [x] Persist authorized library directory handles where the browser supports File System Access API handles in IndexedDB.
 - [x] Resolve `DT_NEEDED` by exact SONAME / filename and report permission-required separately from unresolved.
 - [x] Materialize recursive dynamic dependency bytes for Process Sandbox execution through exact filename/DT_SONAME resolution.
+- [x] Show recursive dependency preflight in Binary Map (PT_INTERP, direct DT_NEEDED and transitive DT_NEEDED with parent/depth evidence), including lazy migration of older imported-library records.
+- [x] Build an ELF-wide interprocedural call graph from discovered functions without requiring the user to open each function; keep direct CALL/tail-call evidence and the proven libc startup handoff.
 - [ ] Load dependency images into separate **analysis** address spaces and expose cross-library symbol/call edges; runtime Blink loading remains observed state and must not mutate static IR.
 - [ ] Add project-local dependency overrides with precedence above global dependencies.
 - [ ] Add dependency indexing/virtualization for very large library roots instead of exact-name lookup only.
@@ -75,7 +77,9 @@
 - [x] Follow paused execution in the UI: reveal the live PC in binary disassembly, switch binary graphs to Function CFG during stepping and focus the current basic block on the canvas.
 - [ ] Extend the vendored Blink ABI with register snapshots that do not depend on its internal disassembler, then unify Step and Run without a Reset boundary.
 - [x] Capture Blink/Emscripten provider diagnostics (`print`, `printErr`, `onAbort`) in execution snapshots; aggregate repeated host warnings and preserve thrown WASM stacks instead of relying on browser DevTools.
-- [ ] Root-cause the remaining Blink/WASM native `abort()` reached by dynamically linked glibc `ray_test`; do not attribute it to `__syscall_mprotect` without independent evidence because Emscripten's compatibility stub returns success.
+- [x] Root-cause the glibc startup rejection for the minimal dynamic `puts()` ELF: the upstream browser Blink build disables x87/FPU and therefore advertises less than glibc `x86-64-baseline`.
+- [x] Replace acceptance of the upstream prebuilt Blink payload with a pinned source build profile enabling x87/FPU, MMX and Linux non-POSIX APIs while keeping JIT disabled; validate the generated profile before execution.
+- [ ] Run the rebuilt baseline Blink against a real uploaded `ld-linux-x86-64.so.2` + `libc.so.6` pair and promote the dynamic `puts()` fixture to a zero-UI regression test once it reaches stdout + exit(0).
 
 ## Headless execution follow-up
 
