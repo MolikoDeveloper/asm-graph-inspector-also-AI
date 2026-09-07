@@ -174,6 +174,10 @@ export function AnalysisDock({
     navigateAddress(address);
   };
 
+  const functionContaining = (address: number) => functions.find((fn) => fn.address === address)
+    ?? functions.find((fn) => fn.endAddress !== null && address >= fn.address && address < fn.endAddress)
+    ?? null;
+
   const toggleExpandedGroup = (groupId: string) => {
     setExpandedGroups((current) => {
       const next = new Set(current);
@@ -189,10 +193,15 @@ export function AnalysisDock({
 
   const activateNode = (id: string) => {
     if (!graphForInspector) return;
+
+    // Program-flow double click means "enter this entity". A function opens its Function CFG;
+    // compact namespace groups expand/collapse; PLT/reference nodes navigate to their address.
     if (tab === 'cfg' && cfgView === 'program' && programFlow) {
       const action = programFlow.actions.get(id);
       if (action?.kind === 'function') {
+        setCfgView('function');
         selectFunction(action.address);
+        onSelect(null);
         return;
       }
       if (action?.kind === 'group') {
@@ -204,8 +213,45 @@ export function AnalysisDock({
         return;
       }
     }
+
     const node = graphForInspector.nodes.find((candidate) => candidate.id === id);
-    if (node?.address !== undefined) onNavigate({ address: node.address });
+    if (!node) return;
+
+    // A basic block already is the detail unit in Function CFG. Double click only drills into
+    // reference/function nodes; it must not behave like a second selection/navigation gesture.
+    if (tab === 'cfg' && cfgView === 'function') {
+      if (node.blockInstructions?.length) return;
+      if (node.address === undefined) return;
+      const targetFunction = functionContaining(node.address);
+      if (targetFunction) {
+        selectFunction(targetFunction.address);
+        onSelect(null);
+      } else {
+        navigateAddress(node.address);
+      }
+      return;
+    }
+
+    // Structure nodes representing functions drill into the Function CFG. Other address-bearing
+    // binary components drill into their disassembly location. Non-address summary nodes have no
+    // deeper view, so double click is intentionally a no-op.
+    if (tab === 'structure') {
+      if (node.address === undefined) return;
+      const targetFunction = functionContaining(node.address);
+      if (targetFunction && (node.category ?? '').toUpperCase().includes('FUNCTION')) {
+        setTab('cfg');
+        setCfgView('function');
+        selectFunction(targetFunction.address);
+        onSelect(null);
+      } else {
+        navigateAddress(node.address);
+      }
+      return;
+    }
+
+    // Dataflow/source nodes may expose an instruction/source address. That address is their deeper
+    // detail. Values/lanes without an address remain inspection-only.
+    if (node.address !== undefined) navigateAddress(node.address);
   };
 
   const graphColumns = {
