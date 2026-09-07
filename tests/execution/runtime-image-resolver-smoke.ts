@@ -57,7 +57,7 @@ assertEqual(fixed.imageAddress, programRip, 'fixed program image address');
 assertEqual(fixed.loadBias, 0n, 'fixed program load bias');
 assertEqual(fixed.confidence, 'fixed-address', 'fixed program confidence');
 
-const dependencyCode = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xec, 0x10, 0x90, 0xc3];
+const dependencyCode = [0x55, 0x48, 0x89, 0xe5, 0x48, 0x83, 0xec, 0x10, 0x90, 0xc3, 0x66, 0x90, 0x90, 0x90, 0x90];
 const dependency = candidate('libc', 'libc.so.6', 'dependency', 0x1000, 0x30, dependencyCode);
 const dependencyBias = 0x7f00_0000_0000n;
 const dependencyImageRip = 0x1030n;
@@ -86,6 +86,16 @@ assert(cached, 'cached dependency bias should resolve the next RIP');
 assertEqual(cached.imageAddress, dependencyImageRip + 1n, 'cached dependency image address');
 assertEqual(cached.confidence, 'cached-signature', 'cached dependency confidence');
 
+const observedResolver = new RuntimeImageResolver([program, dependency], new Map([['program', 0n]]));
+const observedBytes = dependency.bytes.slice(0x30, 0x30 + 15);
+const observed = observedResolver.resolveBytes(dependencyRip, observedBytes);
+assert(observed, 'headless observed bytes should identify a relocated dependency');
+assertEqual(observed.name, 'libc.so.6', 'observed dependency name');
+assertEqual(observed.imageAddress, dependencyImageRip, 'observed dependency image address');
+assertEqual(observed.loadBias, dependencyBias, 'observed dependency load bias');
+assertEqual(observed.confidence, 'signature', 'observed dependency confidence');
+assertEqual(observed.signatureBytes, 15, 'observed signature byte count');
+
 const ambiguousA = candidate('ambiguous-a', 'libA.so', 'dependency', 0x2000, 0x40, dependencyCode);
 const ambiguousB = candidate('ambiguous-b', 'libB.so', 'dependency', 0x3000, 0x40, dependencyCode);
 const ambiguousBias = 0x7f10_0000_0000n;
@@ -95,7 +105,10 @@ const ambiguousLines = [
   line(ambiguousRip + 1n, [0x48, 0x89, 0xe5], 'mov rbp, rsp'),
   line(ambiguousRip + 4n, [0x48, 0x83, 0xec, 0x10], 'sub rsp, 0x10')
 ];
-const ambiguous = new RuntimeImageResolver([ambiguousA, ambiguousB]).resolve(ambiguousLines, ambiguousRip, 0);
-assertEqual(ambiguous, null, 'ambiguous byte signature must fail closed');
+const ambiguousResolver = new RuntimeImageResolver([ambiguousA, ambiguousB]);
+const ambiguous = ambiguousResolver.resolve(ambiguousLines, ambiguousRip, 0);
+assertEqual(ambiguous, null, 'ambiguous debugger byte signature must fail closed');
+const ambiguousObserved = ambiguousResolver.resolveBytes(ambiguousRip, ambiguousA.bytes.slice(0x40, 0x40 + 15));
+assertEqual(ambiguousObserved, null, 'ambiguous observed byte signature must fail closed');
 
-console.log('runtime image resolver smoke: PASS (fixed ET_EXEC + signature load bias + cached lookup + ambiguity fail-closed)');
+console.log('runtime image resolver smoke: PASS (fixed ET_EXEC + debugger/observed signatures + cached lookup + ambiguity fail-closed)');
