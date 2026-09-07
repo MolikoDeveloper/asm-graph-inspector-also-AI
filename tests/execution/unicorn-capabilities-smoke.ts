@@ -42,7 +42,8 @@ function probeStackWrite(module: UnicornModule, stackTop: number): { supported: 
 function probeHighRipLoaderPrologue(
   module: UnicornModule,
   hookMode: HighRipHookMode = 'none',
-  capstone: CapstoneModule | null = null
+  capstone: CapstoneModule | null = null,
+  emulationCount = 0
 ): { supported: boolean; error: string | null } {
   const engine = new module.Unicorn(module.ARCH_X86, module.MODE_64);
   const decoder = hookMode === 'capstone' && capstone ? createX86_64InstructionDecoder(capstone) : null;
@@ -107,7 +108,7 @@ function probeHighRipLoaderPrologue(
         }
       });
     }
-    engine.emu_start(code, code + prologue.length, 0, 0);
+    engine.emu_start(code, code + prologue.length, 0, emulationCount);
     assert.equal(engine.reg_read_i64(module.X86_REG_RDI), 0x80000008n, 'high-RIP RIP-relative load must preserve the 32-bit feature word');
     assert.equal(engine.reg_read_i64(module.X86_REG_RSP), BigInt(stackTop - 5 * 8 - 0xb0 - 8), 'loader prologue stack shape must match x86-64 pushes');
     if (hookMode !== 'none') assert.ok(hookHits > 0, 'UC_HOOK_CODE must observe the high-RIP loader prologue');
@@ -202,7 +203,9 @@ try {
   const lowStack = probeStackWrite(module, 0x7ff00000);
   const highStack = probeStackWrite(module, 0x0000_7fff_ffff_f000);
   const highRipLoader = probeHighRipLoaderPrologue(module);
+  const highRipCounted = probeHighRipLoaderPrologue(module, 'none', null, 500);
   const highRipCodeHook = probeHighRipLoaderPrologue(module, 'empty');
+  const highRipCountedCodeHook = probeHighRipLoaderPrologue(module, 'empty', null, 500);
   const highRipCodeHookRead = probeHighRipLoaderPrologue(module, 'mem-read');
   const highRipCodeHookCapstone = probeHighRipLoaderPrologue(module, 'capstone', capstone);
   const helperAdapter = probeHelperAdapter(module);
@@ -210,14 +213,16 @@ try {
   assert.equal(lowStack.supported, true, `low-address x86 stack must work: ${lowStack.error ?? ''}`);
   assert.equal(highStack.supported, true, `high-address x86 stack must work: ${highStack.error ?? ''}`);
   assert.equal(highRipLoader.supported, true, `high-RIP loader prologue must work: ${highRipLoader.error ?? ''}`);
+  assert.equal(highRipCounted.supported, true, `high-RIP loader prologue with Unicorn instruction count must work: ${highRipCounted.error ?? ''}`);
   assert.equal(highRipCodeHook.supported, true, `high-RIP loader prologue with empty UC_HOOK_CODE must work: ${highRipCodeHook.error ?? ''}`);
+  assert.equal(highRipCountedCodeHook.supported, true, `high-RIP loader prologue with instruction count + UC_HOOK_CODE must work: ${highRipCountedCodeHook.error ?? ''}`);
   assert.equal(highRipCodeHookRead.supported, true, `high-RIP loader UC_HOOK_CODE mem_read must work: ${highRipCodeHookRead.error ?? ''}`);
   assert.equal(highRipCodeHookCapstone.supported, true, `high-RIP loader UC_HOOK_CODE Capstone decode must work: ${highRipCodeHookCapstone.error ?? ''}`);
   assert.equal(helperAdapter.supported, true, `TCG helper adapter path must work: ${helperAdapter.error ?? ''}`);
   assert.equal(syscallHook.supported, true, `UC_HOOK_INSN syscall interception must work: ${syscallHook.error ?? ''}`);
 
   const summary = report.probes.map((probe) => `${probe.id}=${probe.supported ? 'yes' : 'no'}`).join(' ');
-  console.log(`Unicorn capability smoke: PASS · ${summary} low-stack=yes high-stack=yes high-rip-loader=yes high-rip-code-hook=yes high-rip-code-hook-read=yes high-rip-code-hook-capstone=yes helper-adapter=yes syscall-hook=yes`);
+  console.log(`Unicorn capability smoke: PASS · ${summary} low-stack=yes high-stack=yes high-rip-loader=yes high-rip-counted=yes high-rip-code-hook=yes high-rip-counted-code-hook=yes high-rip-code-hook-read=yes high-rip-code-hook-capstone=yes helper-adapter=yes syscall-hook=yes`);
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }
