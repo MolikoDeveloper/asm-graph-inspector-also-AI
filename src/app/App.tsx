@@ -13,6 +13,9 @@ import { executionSupportForTarget, useExecutionController } from '../features/e
 import { executionAddressFromSnapshot, findBinaryFunctionForAddress, graphNodeForAddress, imageContainsExecutableAddress, projectExecutionTrace } from '../features/execution/follow';
 import type { ExecutionTarget } from '../features/execution/model';
 import type { ProjectFile } from '../features/project/model';
+import type { AssemblerBackend } from '../features/toolchain/model';
+import { buildAssemblyProject } from '../features/toolchain/projectAssemblyBuild';
+import { createPinnedNasmLdAssemblerBackend } from '../features/toolchain/pinnedNasmLdToolchain';
 import { initialWorkspaceState, type EditorRevealTarget } from '../features/workspace/model';
 import { workspaceReducer } from '../features/workspace/workspaceReducer';
 import { makeId } from '../shared/id';
@@ -50,6 +53,7 @@ export function App() {
   const [revealTarget, setRevealTarget] = useState<EditorRevealTarget | null>(null);
   const [output, setOutput] = useState<OutputEntry[]>([]);
   const [capstoneStatus, setCapstoneStatus] = useState<CapstoneStatus>('idle');
+  const [assemblyBusy, setAssemblyBusy] = useState(false);
   const fileInputRef = useRef<HTMLInputElement>(null);
   const folderInputRef = useRef<HTMLInputElement>(null);
   const lastProjectId = useRef<string | null>(null);
@@ -61,6 +65,7 @@ export function App() {
   const revealSequence = useRef(0);
   const executionFollowKey = useRef<string | null>(null);
   const executionAnalysisKey = useRef<string | null>(null);
+  const assemblyBackendRef = useRef<Promise<AssemblerBackend> | null>(null);
 
   const project = projects.project;
   const activeGroup = workspace.groups.find((group) => group.id === workspace.activeGroupId) ?? workspace.groups[0];
@@ -68,6 +73,7 @@ export function App() {
   const activeGraph = activeFile ? graphs.get(activeFile.id) ?? null : null;
   const activeBinarySummary = activeFile ? binarySummaries.get(activeFile.id) ?? null : null;
   const activeProblems = activeFile ? problemsByFile.get(activeFile.id) ?? [] : [];
+  const activeAsmBuildable = activeFile?.kind === 'text' && activeFile.language === 'asm';
   const executionTarget = useMemo<ExecutionTarget | null>(() => {
     if (activeFile?.kind === 'binary' && activeBinarySummary) return { kind: 'binary', file: activeFile, image: activeBinarySummary.image };
     if (activeFile?.kind === 'text' && activeFile.language === 'asm') return { kind: 'asm-source', file: activeFile, source: activeFile.text ?? '' };
@@ -93,6 +99,16 @@ export function App() {
 
   const log = useCallback((message: string, level: OutputEntry['level'] = 'info') => {
     setOutput((entries) => [...entries.slice(-399), { id: makeId('log'), time: Date.now(), level, message }]);
+  }, []);
+
+  const getAssemblyBackend = useCallback((): Promise<AssemblerBackend> => {
+    if (!assemblyBackendRef.current) {
+      assemblyBackendRef.current = createPinnedNasmLdAssemblerBackend().catch((error: unknown) => {
+        assemblyBackendRef.current = null;
+        throw error;
+      });
+    }
+    return assemblyBackendRef.current;
   }, []);
 
   const reveal = useCallback((fileId: string, target: { line?: number; address?: number }) => {
@@ -380,6 +396,67 @@ export function App() {
     void runBinaryAnalysis(activeFile, address, false);
   }, [activeFile, runBinaryAnalysis]);
 
+  const buildActiveAssembly = useCallback(async (runAfterBuild = false) => {
+    if (!project || activeFile?.kind !== 'text' || activeFile.language !== 'asm') {
+      log('Build requires an active ASM source file.', 'error');
+      return;
+    }
+    if (assemblyBusy) return;
+
+    setAssemblyBusy(true);
+    try {
+      log(`Assembling ${activeFile.path} with pinned NASM + GNU ld…`);
+      const backend = await getAssemblyBackend();
+      const build = await buildAssemblyProject(project, backend, { sourceFileIds: [activeFile.id] });
+      for (const diagnostic of build.assembly.diagnostics) {
+        const level: OutputEntry['level'] = diagnostic.severity === 'error' ? 'error' : diagnostic.severity === 'warning' ? 'muted' : 'info';
+        log(`${diagnostic.tool ? `[${diagnostic.tool}] ` : ''}${diagnostic.message}`, level);
+      }
+      if (build.assembly.stdout.trim()) log(build.assembly.stdout.trim(), 'muted');
+      if (build.assembly.stderr.trim() && !build.assembly.diagnostics.length) log(build.assembly.stderr.trim(), 'muted');
+
+      const generated = build.generatedFile;
+      if (!generated) {
+        log(`ASM build failed for ${activeFile.path}.`, 'error');
+        return;
+      }
+
+      clearBinaryAnalysisCache(generated.id);
+      clearFullDisassemblyCache(generated.id);
+      projects.addFiles([generated]);
+      dispatch({ type: 'open-file', fileId: generated.id });
+
+      setCapstoneStatus('loading');
+      const analyzed = await analyzeBinary(generated);
+      setCapstoneStatus('ready');
+      commitGraph(generated.id, analyzed.graph);
+      setBinarySummaries((current) => {
+        const next = new Map(current);
+        next.set(generated.id, analyzed.summary);
+        return next;
+      });
+      for (const diagnostic of analyzed.graph.diagnostics) log(diagnostic, 'muted');
+      log(`Built ${activeFile.path} → ${generated.path}: ${generated.size.toLocaleString()} bytes, ${analyzed.summary.instructions.length} canonical instructions.`, 'success');
+
+      if (runAfterBuild) {
+        const target: ExecutionTarget = { kind: 'binary', file: generated, image: analyzed.summary.image };
+        const support = executionSupportForTarget(target);
+        if (!support.supported) {
+          log(`Generated ELF cannot execute: ${support.reasons.join(' ')}`, 'error');
+          return;
+        }
+        execution.clear();
+        await new Promise<void>((resolve) => window.requestAnimationFrame(() => resolve()));
+        await execution.run(target);
+      }
+    } catch (error: unknown) {
+      setCapstoneStatus((current) => current === 'loading' ? 'error' : current);
+      log(`ASM build failed: ${error instanceof Error ? error.message : String(error)}`, 'error');
+    } finally {
+      setAssemblyBusy(false);
+    }
+  }, [activeFile, assemblyBusy, commitGraph, execution, getAssemblyBackend, log, project, projects]);
+
   const prepareExecution = useCallback(async () => {
     if (!executionTarget) { log('No executable binary or ASM source is active.', 'error'); return; }
     await execution.prepare(executionTarget);
@@ -448,6 +525,13 @@ export function App() {
       ]
     },
     {
+      label: 'Build',
+      items: [
+        { label: assemblyBusy ? 'Building ASM…' : 'Build Active ASM to ELF', shortcut: 'Ctrl Shift B', action: () => void buildActiveAssembly(false), disabled: !activeAsmBuildable || assemblyBusy },
+        { label: 'Assemble & Run ELF', action: () => void buildActiveAssembly(true), disabled: !activeAsmBuildable || assemblyBusy }
+      ]
+    },
+    {
       label: 'Run',
       items: [
         { label: 'Run Active Program', shortcut: 'F6', action: () => void runExecution(), disabled: !executionTarget || activeExecutionSupport?.supported !== true },
@@ -465,7 +549,7 @@ export function App() {
       ]
     },
     { label: 'Help', items: [{ label: 'About', action: () => setAboutOpen(true) }] }
-  ], [activeFile, projects, runAnalysis, workspace.activeGroupId, log, openNewFileDialog, exportCurrentProject, runExecution, stepExecution, resetExecution, execution.pause, execution.snapshot.status, executionTarget, activeExecutionSupport]);
+  ], [activeFile, activeAsmBuildable, activeExecutionSupport, assemblyBusy, buildActiveAssembly, execution.pause, execution.snapshot.status, executionTarget, exportCurrentProject, log, openNewFileDialog, projects, resetExecution, runAnalysis, runExecution, stepExecution, workspace.activeGroupId]);
 
   useEffect(() => {
     folderInputRef.current?.setAttribute('webkitdirectory', '');
@@ -483,7 +567,8 @@ export function App() {
   useEffect(() => {
     const onKeyDown = (event: KeyboardEvent) => {
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 's') { event.preventDefault(); void projects.saveNow(); }
-      if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'b') { event.preventDefault(); dispatch({ type: 'toggle-explorer' }); }
+      if ((event.ctrlKey || event.metaKey) && event.shiftKey && event.key.toLowerCase() === 'b') { event.preventDefault(); void buildActiveAssembly(false); return; }
+      if ((event.ctrlKey || event.metaKey) && !event.shiftKey && event.key.toLowerCase() === 'b') { event.preventDefault(); dispatch({ type: 'toggle-explorer' }); }
       if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === 'j') { event.preventDefault(); dispatch({ type: 'toggle-bottom' }); }
       if ((event.ctrlKey || event.metaKey) && event.key === '\\') { event.preventDefault(); dispatch({ type: 'split-right' }); }
       if ((event.ctrlKey || event.metaKey) && event.key === ',') { event.preventDefault(); setSettingsOpen(true); }
@@ -494,7 +579,7 @@ export function App() {
     };
     window.addEventListener('keydown', onKeyDown);
     return () => window.removeEventListener('keydown', onKeyDown);
-  }, [project, projects, runAnalysis, runExecution, stepExecution, openNewFileDialog]);
+  }, [buildActiveAssembly, openNewFileDialog, project, projects, runAnalysis, runExecution, stepExecution]);
 
   if (!project) {
     return <ProjectGate projects={projects.summaries} loading={projects.loading} onCreate={projects.createProject} onOpen={projects.openProject} onDelete={projects.deleteProject} />;
