@@ -56,12 +56,13 @@ const first = await ensureAssemblyExecutable(initialProject, backend, { sourceFi
 assert(!first.reused, 'first execution artifact must build');
 assert(backend.calls === 1, 'first execution artifact should invoke assembler once');
 assert(first.file.generated?.sourceRevisions?.[0]?.updatedAt === 10, 'generated artifact must retain source revision');
+assert(first.file.generated?.sourceRevisions?.[0]?.sha256.length === 64, 'generated artifact must retain SHA-256 source identity');
 
 const projectWithArtifact: InspectorProject = {
   ...initialProject,
   files: [...initialProject.files, first.file]
 };
-assert(isFreshAssemblyArtifact(first.file, projectWithArtifact, backend.id, ['main']), 'fresh generated artifact should match current source revision');
+assert(await isFreshAssemblyArtifact(first.file, projectWithArtifact, backend.id, ['main']), 'fresh generated artifact should match current source revision');
 
 const second = await ensureAssemblyExecutable(projectWithArtifact, backend, { sourceFileIds: ['main'] });
 assert(second.reused, 'unchanged ASM should reuse its generated ELF');
@@ -79,7 +80,19 @@ const changedProject: InspectorProject = {
   updatedAt: 11,
   files: [changedSource, first.file]
 };
-assert(!isFreshAssemblyArtifact(first.file, changedProject, backend.id, ['main']), 'source edit must stale the previous generated ELF');
+assert(!(await isFreshAssemblyArtifact(first.file, changedProject, backend.id, ['main'])), 'source edit must stale the previous generated ELF');
+
+const sameMetadataDifferentText = {
+  ...initialProject.files[0],
+  text: 'global _start\n_start:\n  nop\n',
+  size: initialProject.files[0].size,
+  updatedAt: initialProject.files[0].updatedAt
+};
+const collisionGuardProject: InspectorProject = {
+  ...projectWithArtifact,
+  files: [sameMetadataDifferentText, first.file]
+};
+assert(!(await isFreshAssemblyArtifact(first.file, collisionGuardProject, backend.id, ['main'])), 'SHA-256 must stale an artifact even if timestamp and byte count metadata collide');
 
 const rebuilt = await ensureAssemblyExecutable(changedProject, backend, { sourceFileIds: ['main'] });
 assert(!rebuilt.reused, 'edited ASM must rebuild before execution');
@@ -87,4 +100,4 @@ assert(backend.calls === 2, 'edited ASM should invoke assembler exactly once mor
 assert(rebuilt.file.id === first.file.id, 'rebuild must replace the same generated project artifact identity');
 assert(rebuilt.file.generated?.sourceRevisions?.[0]?.updatedAt === 11, 'rebuilt artifact must stamp the new source revision');
 
-console.log('ASM execution artifact smoke: PASS (build -> reuse unchanged ELF -> rebuild edited source)');
+console.log('ASM execution artifact smoke: PASS (SHA-256 freshness -> reuse unchanged ELF -> rebuild edited source)');
