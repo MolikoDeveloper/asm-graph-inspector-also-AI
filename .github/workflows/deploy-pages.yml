@@ -14,6 +14,9 @@ concurrency:
   group: github-pages
   cancel-in-progress: true
 
+env:
+  EMSCRIPTEN_VERSION: 3.1.64
+
 jobs:
   build:
     runs-on: ubuntu-latest
@@ -26,8 +29,26 @@ jobs:
         with:
           bun-version: latest
 
+      - name: Setup Emscripten
+        uses: emscripten-core/setup-emsdk@v16
+        with:
+          version: ${{ env.EMSCRIPTEN_VERSION }}
+          actions-cache-folder: emsdk-cache
+
+      - name: Verify Emscripten toolchain
+        run: |
+          emcc --version
+          command -v emconfigure
+          command -v emmake
+
       - name: Install dependencies
         run: bun install --frozen-lockfile
+
+      - name: Build Blink WASM runtime
+        run: bun run vendor:blink
+
+      - name: Execution tests
+        run: bun run test:execution
 
       - name: Typecheck
         run: bun run typecheck
