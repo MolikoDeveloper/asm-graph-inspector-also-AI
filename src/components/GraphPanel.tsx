@@ -1,23 +1,44 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Boxes, Crosshair, GitBranch, Minus, Plus, RotateCcw, Trash2 } from 'lucide-react';
-import type { AnalysisGraph, GraphNode } from '../features/analysis/model';
+import type { AnalysisGraph, GraphEdge, GraphNode } from '../features/analysis/model';
+import { projectGraphSelection } from '../features/analysis/graphSelection';
 import { layoutGraph, type PositionedGraphNode } from '../features/analysis/layout';
 import type { ExecutionTraceProjection } from '../features/execution/follow';
 import { EmptyState, IconButton } from './ui';
 
 interface Viewport { x: number; y: number; zoom: number; }
 
+interface MiniMapGeometry {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+  plotX: number;
+  plotY: number;
+  scale: number;
+  bounds: { minX: number; minY: number; maxX: number; maxY: number };
+}
+
+interface NodeVisualState {
+  selected: boolean;
+  current: boolean;
+  visited: boolean;
+  pathHighlighted: boolean;
+  dimmed: boolean;
+  executionCount: number;
+}
+
 const MIN_ZOOM = 0.22;
 const MAX_ZOOM = 2.8;
 const DEFAULT_VIEWPORT: Viewport = { x: 20, y: 10, zoom: 0.9 };
-const CFG_MAX_VISIBLE_INSTRUCTIONS = 6;
+const CFG_MAX_VISIBLE_INSTRUCTIONS = 8;
 
 const NODE_COLORS: Record<GraphNode['kind'], { fill: string; stroke: string }> = {
   label: { fill: '#0e1a25', stroke: '#355a74' },
-  instruction: { fill: '#0d1721', stroke: '#3d596f' },
-  branch: { fill: '#0d1721', stroke: '#52677a' },
-  call: { fill: '#0f1720', stroke: '#655160' },
-  syscall: { fill: '#11171f', stroke: '#74505a' },
+  instruction: { fill: '#0c1720', stroke: '#38556b' },
+  branch: { fill: '#0c1720', stroke: '#52677a' },
+  call: { fill: '#0d1720', stroke: '#655160' },
+  syscall: { fill: '#10171f', stroke: '#74505a' },
   data: { fill: '#0d1918', stroke: '#3d6a5a' }
 };
 
@@ -29,7 +50,7 @@ function roundedRect(ctx: CanvasRenderingContext2D, x: number, y: number, width:
 function viewportForBounds(bounds: { minX: number; minY: number; maxX: number; maxY: number }, width: number, height: number): Viewport {
   const contentWidth = Math.max(1, bounds.maxX - bounds.minX);
   const contentHeight = Math.max(1, bounds.maxY - bounds.minY);
-  const padding = 42;
+  const padding = 46;
   const availableWidth = Math.max(40, width - padding * 2);
   const availableHeight = Math.max(40, height - padding * 2);
   const zoom = Math.min(MAX_ZOOM, Math.max(MIN_ZOOM, Math.min(availableWidth / contentWidth, availableHeight / contentHeight)));
@@ -49,10 +70,10 @@ function boundsForNodes(nodes: PositionedGraphNode[]): { minX: number; minY: num
   let maxX = Number.NEGATIVE_INFINITY;
   let maxY = Number.NEGATIVE_INFINITY;
   for (const node of nodes) {
-    minX = Math.min(minX, node.x - 24);
-    minY = Math.min(minY, node.y - 24);
-    maxX = Math.max(maxX, node.x + node.width + 24);
-    maxY = Math.max(maxY, node.y + node.height + 24);
+    minX = Math.min(minX, node.x - 30);
+    minY = Math.min(minY, node.y - 30);
+    maxX = Math.max(maxX, node.x + node.width + 30);
+    maxY = Math.max(maxY, node.y + node.height + 30);
   }
   return { minX, minY, maxX, maxY };
 }
@@ -89,6 +110,20 @@ function drawPill(ctx: CanvasRenderingContext2D, text: string, x: number, y: num
   ctx.textBaseline = 'alphabetic';
 }
 
+function drawArrowHead(ctx: CanvasRenderingContext2D, x: number, y: number, dx: number, dy: number, size = 8) {
+  const length = Math.hypot(dx, dy) || 1;
+  const ux = dx / length;
+  const uy = dy / length;
+  const px = -uy;
+  const py = ux;
+  ctx.beginPath();
+  ctx.moveTo(x, y);
+  ctx.lineTo(x - ux * size + px * size * 0.58, y - uy * size + py * size * 0.58);
+  ctx.lineTo(x - ux * size - px * size * 0.58, y - uy * size - py * size * 0.58);
+  ctx.closePath();
+  ctx.fill();
+}
+
 function conditionalSource(graph: AnalysisGraph, nodeId: string): boolean {
   return graph.edges.some((edge) => edge.from === nodeId && edge.kind === 'branch')
     && graph.edges.some((edge) => edge.from === nodeId && edge.kind === 'control' && edge.label === 'fallthrough');
@@ -101,109 +136,123 @@ function cfgHeaderLabel(graph: AnalysisGraph, node: PositionedGraphNode): string
   return base === 'entry' ? '<entry>' : base;
 }
 
-function drawCfgNode(
-  ctx: CanvasRenderingContext2D,
-  graph: AnalysisGraph,
-  node: PositionedGraphNode,
-  state: { selected: boolean; current: boolean; visited: boolean; executionCount: number }
-) {
-  const { selected, current, visited, executionCount } = state;
+function drawCfgNode(ctx: CanvasRenderingContext2D, graph: AnalysisGraph, node: PositionedGraphNode, state: NodeVisualState) {
+  const { selected, current, visited, pathHighlighted, dimmed, executionCount } = state;
   const palette = NODE_COLORS[node.kind];
-  const stroke = current ? '#169cff' : selected ? '#55b8ff' : visited ? '#2ac77b' : palette.stroke;
+  const stroke = current
+    ? '#179fff'
+    : selected
+      ? '#55b8ff'
+      : visited
+        ? '#2ac77b'
+        : pathHighlighted
+          ? '#3c91bb'
+          : palette.stroke;
 
-  ctx.globalAlpha = node.reachable === false ? 0.42 : 1;
-  roundedRect(ctx, node.x, node.y, node.width, node.height, 7);
+  const reachabilityAlpha = node.reachable === false ? 0.42 : 1;
+  ctx.globalAlpha = dimmed ? Math.min(0.3, reachabilityAlpha) : reachabilityAlpha;
+  ctx.shadowColor = 'rgba(0, 0, 0, .4)';
+  ctx.shadowBlur = 10;
+  ctx.shadowOffsetY = 3;
+  roundedRect(ctx, node.x, node.y, node.width, node.height, 8);
   ctx.fillStyle = palette.fill;
   ctx.fill();
+  ctx.shadowBlur = 0;
+  ctx.shadowOffsetY = 0;
   ctx.strokeStyle = stroke;
-  ctx.lineWidth = current ? 3 : selected ? 2.2 : visited ? 1.8 : 1.2;
+  ctx.lineWidth = current ? 3 : selected ? 2.5 : visited ? 1.9 : pathHighlighted ? 1.8 : 1.2;
   ctx.stroke();
 
   if (current || selected) {
     ctx.shadowColor = current ? '#0c8ee8' : '#247cb6';
-    ctx.shadowBlur = current ? 18 : 10;
+    ctx.shadowBlur = current ? 20 : 12;
     ctx.stroke();
     ctx.shadowBlur = 0;
   }
 
-  if (current) {
-    roundedRect(ctx, node.x, node.y, 4, node.height, 3);
-    ctx.fillStyle = '#20a5ff';
-    ctx.fill();
-  }
+  const accent = current ? '#20a5ff' : selected ? '#55b8ff' : visited ? '#2ac77b' : pathHighlighted ? '#3f98c0' : '#274154';
+  roundedRect(ctx, node.x, node.y, 4, node.height, 3);
+  ctx.fillStyle = accent;
+  ctx.fill();
 
-  const headerBottom = node.y + 34;
-  ctx.strokeStyle = '#1b2a35';
+  const headerBottom = node.y + 37;
+  ctx.fillStyle = '#0d1821';
+  ctx.fillRect(node.x + 4, node.y + 1, node.width - 5, 35);
+  ctx.strokeStyle = '#1d2c37';
   ctx.lineWidth = 1;
   ctx.beginPath();
-  ctx.moveTo(node.x + 1, headerBottom);
+  ctx.moveTo(node.x + 5, headerBottom);
   ctx.lineTo(node.x + node.width - 1, headerBottom);
   ctx.stroke();
 
-  ctx.font = '600 12px ui-monospace, SFMono-Regular, Menlo, monospace';
-  ctx.fillStyle = current ? '#70c8ff' : visited ? '#61d99a' : '#c6d4df';
+  ctx.font = '700 12px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.fillStyle = current ? '#78ceff' : visited ? '#68dca0' : '#d6e2eb';
   const address = node.address === undefined ? '—' : `0x${node.address.toString(16)}`;
-  ctx.fillText(address, node.x + 12, node.y + 22);
+  ctx.fillText(address, node.x + 14, node.y + 24);
 
   const headerLabel = cfgHeaderLabel(graph, node);
   if (headerLabel) {
     ctx.font = '600 11px ui-monospace, SFMono-Regular, Menlo, monospace';
-    ctx.fillStyle = '#8ea2b4';
-    const label = fitText(ctx, headerLabel, node.width - 105);
-    ctx.fillText(label, node.x + 94, node.y + 22);
+    ctx.fillStyle = node.address === graph.functionAddress ? '#b6c9d8' : '#8298aa';
+    const label = fitText(ctx, headerLabel, node.width - 120);
+    ctx.fillText(label, node.x + 110, node.y + 24);
   }
 
   const instructions = node.blockInstructions ?? [];
   const shown = instructions.slice(0, CFG_MAX_VISIBLE_INSTRUCTIONS);
   for (let index = 0; index < shown.length; index += 1) {
     const instruction = shown[index];
-    const y = node.y + 54 + index * 17;
+    const y = node.y + 57 + index * 18;
     ctx.font = '600 11px ui-monospace, SFMono-Regular, Menlo, monospace';
-    ctx.fillStyle = instruction.controlFlow === 'jump' ? '#d49a64' : instruction.controlFlow === 'call' ? '#61b8ee' : instruction.controlFlow === 'return' ? '#bb8fe0' : '#70bff0';
-    ctx.fillText(instruction.mnemonic, node.x + 12, y);
-    const mnemonicWidth = Math.max(54, ctx.measureText(instruction.mnemonic).width + 12);
+    ctx.fillStyle = instruction.controlFlow === 'jump'
+      ? '#e4a15e'
+      : instruction.controlFlow === 'call'
+        ? '#5fc5ff'
+        : instruction.controlFlow === 'return'
+          ? '#c99af0'
+          : instruction.controlFlow === 'syscall'
+            ? '#e98b98'
+            : '#77bce7';
+    ctx.fillText(instruction.mnemonic, node.x + 14, y);
+    const mnemonicWidth = Math.max(62, ctx.measureText(instruction.mnemonic).width + 13);
     ctx.font = '11px ui-monospace, SFMono-Regular, Menlo, monospace';
-    ctx.fillStyle = '#c1cfda';
-    const operands = fitText(ctx, instruction.operands, node.width - mnemonicWidth - 24);
-    ctx.fillText(operands, node.x + 12 + mnemonicWidth, y);
+    ctx.fillStyle = '#c8d4de';
+    const operands = fitText(ctx, instruction.operands, node.width - mnemonicWidth - 30);
+    ctx.fillText(operands, node.x + 14 + mnemonicWidth, y);
   }
 
   if (instructions.length > CFG_MAX_VISIBLE_INSTRUCTIONS) {
     ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
-    ctx.fillStyle = '#62788a';
-    ctx.fillText(`… +${instructions.length - CFG_MAX_VISIBLE_INSTRUCTIONS} instruction${instructions.length - CFG_MAX_VISIBLE_INSTRUCTIONS === 1 ? '' : 's'}`, node.x + 12, node.y + node.height - 11);
+    ctx.fillStyle = '#667d8f';
+    ctx.fillText(`… +${instructions.length - CFG_MAX_VISIBLE_INSTRUCTIONS} instruction${instructions.length - CFG_MAX_VISIBLE_INSTRUCTIONS === 1 ? '' : 's'}`, node.x + 14, node.y + node.height - 12);
   }
 
   if (executionCount > 0) {
     const badge = executionCount > 9999 ? '×9999+' : `×${executionCount}`;
-    ctx.font = '600 9px ui-monospace, SFMono-Regular, Menlo, monospace';
+    ctx.font = '700 9px ui-monospace, SFMono-Regular, Menlo, monospace';
     const badgeWidth = ctx.measureText(badge).width + 12;
-    roundedRect(ctx, node.x + node.width - badgeWidth - 9, node.y + 9, badgeWidth, 17, 5);
+    roundedRect(ctx, node.x + node.width - badgeWidth - 9, node.y + 10, badgeWidth, 17, 5);
     ctx.fillStyle = current ? '#0b4b72' : '#103929';
     ctx.fill();
     ctx.fillStyle = current ? '#8ed5ff' : '#80dfa8';
-    ctx.fillText(badge, node.x + node.width - badgeWidth - 3, node.y + 21);
+    ctx.fillText(badge, node.x + node.width - badgeWidth - 3, node.y + 22);
   }
   ctx.globalAlpha = 1;
 }
 
-function drawCompactNode(
-  ctx: CanvasRenderingContext2D,
-  node: PositionedGraphNode,
-  state: { selected: boolean; current: boolean; visited: boolean; executionCount: number }
-) {
-  const { selected, current, visited, executionCount } = state;
+function drawCompactNode(ctx: CanvasRenderingContext2D, node: PositionedGraphNode, state: NodeVisualState) {
+  const { selected, current, visited, pathHighlighted, dimmed, executionCount } = state;
   const palette = NODE_COLORS[node.kind];
-  ctx.globalAlpha = node.reachable === false ? 0.42 : 1;
-  roundedRect(ctx, node.x, node.y, node.width, node.height, 6);
+  ctx.globalAlpha = dimmed ? 0.28 : node.reachable === false ? 0.42 : 1;
+  roundedRect(ctx, node.x, node.y, node.width, node.height, 7);
   ctx.fillStyle = palette.fill;
   ctx.fill();
-  ctx.strokeStyle = current ? '#169cff' : selected ? '#55b8ff' : visited ? '#2ac77b' : palette.stroke;
-  ctx.lineWidth = current ? 3 : selected ? 2.2 : visited ? 1.8 : 1.2;
+  ctx.strokeStyle = current ? '#169cff' : selected ? '#55b8ff' : visited ? '#2ac77b' : pathHighlighted ? '#3c91bb' : palette.stroke;
+  ctx.lineWidth = current ? 3 : selected ? 2.3 : visited ? 1.8 : pathHighlighted ? 1.7 : 1.2;
   ctx.stroke();
   if (current || selected) {
     ctx.shadowColor = '#0c8ee8';
-    ctx.shadowBlur = current ? 16 : 9;
+    ctx.shadowBlur = current ? 16 : 10;
     ctx.stroke();
     ctx.shadowBlur = 0;
   }
@@ -233,15 +282,16 @@ function structureColors(category: string | undefined): { fill: string; stroke: 
   return { fill: '#101922', stroke: '#405c72', eyebrow: '#718ca1', title: '#d5e1ea' };
 }
 
-function drawStructureNode(ctx: CanvasRenderingContext2D, node: PositionedGraphNode, selected: boolean) {
+function drawStructureNode(ctx: CanvasRenderingContext2D, node: PositionedGraphNode, state: NodeVisualState) {
   const palette = structureColors(node.category);
+  ctx.globalAlpha = state.dimmed ? 0.3 : 1;
   roundedRect(ctx, node.x, node.y, node.width, node.height, 8);
   ctx.fillStyle = palette.fill;
   ctx.fill();
-  ctx.strokeStyle = selected ? '#39aaf2' : palette.stroke;
-  ctx.lineWidth = selected ? 2.4 : 1.25;
+  ctx.strokeStyle = state.selected ? '#39aaf2' : state.pathHighlighted ? '#3c91bb' : palette.stroke;
+  ctx.lineWidth = state.selected ? 2.4 : state.pathHighlighted ? 1.8 : 1.25;
   ctx.stroke();
-  if (selected) {
+  if (state.selected) {
     ctx.shadowColor = '#178fd8';
     ctx.shadowBlur = 14;
     ctx.stroke();
@@ -270,6 +320,90 @@ function drawStructureNode(ctx: CanvasRenderingContext2D, node: PositionedGraphN
     ctx.fillStyle = '#8fb8d1';
     ctx.fillText(address, node.x + node.width - addressWidth - 3, node.y + 18);
   }
+  ctx.globalAlpha = 1;
+}
+
+function edgeBaseColor(structural: boolean, trueBranch: boolean, falseBranch: boolean, edge: GraphEdge): string {
+  if (structural) return edge.kind === 'call' ? '#625d8a' : edge.kind === 'data' ? '#3d6c64' : '#385c73';
+  if (trueBranch) return '#24c979';
+  if (falseBranch) return '#f05c64';
+  if (edge.kind === 'call') return '#9270cf';
+  if (edge.kind === 'data') return '#48ab8c';
+  return '#6f8497';
+}
+
+function highlightedEdgeColor(trueBranch: boolean, falseBranch: boolean, edge: GraphEdge): string {
+  if (trueBranch) return '#3ee394';
+  if (falseBranch) return '#ff777f';
+  if (edge.kind === 'call') return '#b49cff';
+  if (edge.kind === 'data') return '#65d7b8';
+  return '#5bc2ff';
+}
+
+function isLoopEdge(graph: AnalysisGraph, edge: GraphEdge, from: PositionedGraphNode, to: PositionedGraphNode): boolean {
+  if (edge.loopBack) return true;
+  if (graph.viewKind !== 'function-cfg') return false;
+  return to.y <= from.y || (to.address !== undefined && from.address !== undefined && to.address <= from.address && edge.kind === 'branch');
+}
+
+function drawMiniMap(
+  ctx: CanvasRenderingContext2D,
+  width: number,
+  height: number,
+  positioned: PositionedGraphNode[],
+  bounds: { minX: number; minY: number; maxX: number; maxY: number },
+  viewport: Viewport,
+  selectedId: string | null,
+  pathNodeIds: Set<string>
+): MiniMapGeometry {
+  const mapWidth = Math.max(132, Math.min(188, width * 0.23));
+  const mapHeight = Math.max(92, Math.min(124, height * 0.24));
+  const x = width - mapWidth - 13;
+  const y = height - mapHeight - 13;
+  const padding = 9;
+  const graphWidth = Math.max(1, bounds.maxX - bounds.minX);
+  const graphHeight = Math.max(1, bounds.maxY - bounds.minY);
+  const scale = Math.min((mapWidth - padding * 2) / graphWidth, (mapHeight - padding * 2) / graphHeight);
+  const plotWidth = graphWidth * scale;
+  const plotHeight = graphHeight * scale;
+  const plotX = x + (mapWidth - plotWidth) * 0.5;
+  const plotY = y + (mapHeight - plotHeight) * 0.5;
+
+  ctx.save();
+  roundedRect(ctx, x, y, mapWidth, mapHeight, 7);
+  ctx.fillStyle = 'rgba(8, 15, 21, .94)';
+  ctx.fill();
+  ctx.strokeStyle = '#29404f';
+  ctx.lineWidth = 1;
+  ctx.stroke();
+
+  for (const node of positioned) {
+    const nx = plotX + (node.x - bounds.minX) * scale;
+    const ny = plotY + (node.y - bounds.minY) * scale;
+    const nw = Math.max(2, node.width * scale);
+    const nh = Math.max(2, node.height * scale);
+    ctx.fillStyle = node.id === selectedId ? '#4eb6f2' : pathNodeIds.has(node.id) ? '#337da4' : '#263945';
+    ctx.fillRect(nx, ny, nw, nh);
+  }
+
+  const viewportLeft = -viewport.x / viewport.zoom;
+  const viewportTop = -viewport.y / viewport.zoom;
+  const viewportRight = (width - viewport.x) / viewport.zoom;
+  const viewportBottom = (height - viewport.y) / viewport.zoom;
+  const vx = plotX + (viewportLeft - bounds.minX) * scale;
+  const vy = plotY + (viewportTop - bounds.minY) * scale;
+  const vw = Math.max(7, (viewportRight - viewportLeft) * scale);
+  const vh = Math.max(7, (viewportBottom - viewportTop) * scale);
+  ctx.strokeStyle = '#29a7f2';
+  ctx.lineWidth = 1.4;
+  ctx.strokeRect(vx, vy, vw, vh);
+
+  ctx.font = '700 7px ui-sans-serif, system-ui, sans-serif';
+  ctx.fillStyle = '#5f7d91';
+  ctx.fillText('MINIMAP', x + 7, y + 10);
+  ctx.restore();
+
+  return { x, y, width: mapWidth, height: mapHeight, plotX, plotY, scale, bounds };
 }
 
 export function GraphPanel({
@@ -296,10 +430,28 @@ export function GraphPanel({
   onClear?(): void;
 }) {
   const canvasRef = useRef<HTMLCanvasElement>(null);
+  const miniMapRef = useRef<MiniMapGeometry | null>(null);
   const [viewport, setViewport] = useState<Viewport>(DEFAULT_VIEWPORT);
   const [drag, setDrag] = useState<{ x: number; y: number; originX: number; originY: number } | null>(null);
   const positioned = useMemo(() => graph ? layoutGraph(graph) : [], [graph]);
   const nodeById = useMemo(() => new Map(positioned.map((node) => [node.id, node])), [positioned]);
+  const positionedBounds = useMemo(() => boundsForNodes(positioned), [positioned]);
+  const selection = useMemo(() => projectGraphSelection(graph, selectedId), [graph, selectedId]);
+  const selectionActive = Boolean(selectedId && selection.nodeIds.has(selectedId));
+
+  const loopLaneById = useMemo(() => {
+    const result = new Map<string, number>();
+    if (!graph) return result;
+    let lane = 0;
+    for (const edge of graph.edges) {
+      const from = nodeById.get(edge.from);
+      const to = nodeById.get(edge.to);
+      if (!from || !to || !isLoopEdge(graph, edge, from, to)) continue;
+      result.set(edge.id, lane);
+      lane += 1;
+    }
+    return result;
+  }, [graph, nodeById]);
 
   const measureHost = useCallback(() => {
     const canvas = canvasRef.current;
@@ -345,73 +497,129 @@ export function GraphPanel({
       ctx.stroke();
     }
 
-    for (const edge of graph.edges) {
+    const drawEdge = (edge: GraphEdge) => {
       const from = nodeById.get(edge.from);
       const to = nodeById.get(edge.to);
-      if (!from || !to) continue;
-      const horizontalDataEdge = !structural && edge.kind === 'data' && Math.abs((to.x + to.width / 2) - (from.x + from.width / 2)) > 100;
-      const x1 = horizontalDataEdge ? (to.x >= from.x ? from.x + from.width : from.x) : from.x + from.width / 2;
-      const y1 = horizontalDataEdge ? from.y + from.height / 2 : from.y + from.height;
-      const x2 = horizontalDataEdge ? (to.x >= from.x ? to.x : to.x + to.width) : to.x + to.width / 2;
-      const y2 = horizontalDataEdge ? to.y + to.height / 2 : to.y;
+      if (!from || !to) return;
+      const loopLane = loopLaneById.get(edge.id);
+      const loop = loopLane !== undefined;
+      const horizontalDataEdge = !structural && !loop && edge.kind === 'data' && Math.abs((to.x + to.width / 2) - (from.x + from.width / 2)) > 100;
       const traceCount = trace?.edgeCounts.get(edge.id) ?? 0;
       const conditional = !structural && conditionalSource(graph, edge.from);
       const trueBranch = conditional && edge.kind === 'branch';
       const falseBranch = conditional && edge.kind === 'control' && edge.label === 'fallthrough';
-      const baseColor = structural ? (edge.kind === 'call' ? '#625d8a' : edge.kind === 'data' ? '#3d6c64' : '#385c73') : trueBranch ? '#24c979' : falseBranch ? '#f05c64' : edge.kind === 'call' ? '#9270cf' : edge.kind === 'data' ? '#48ab8c' : '#6f8497';
-      ctx.strokeStyle = traceCount ? '#2ca9ff' : baseColor;
-      ctx.lineWidth = traceCount ? 3 : structural ? 1.35 : edge.kind === 'control' ? 1.5 : 1.8;
-      ctx.beginPath();
-      let labelX: number;
-      let labelY: number;
-      if (horizontalDataEdge) {
-        const midX = (x1 + x2) / 2;
-        ctx.moveTo(x1, y1);
-        ctx.bezierCurveTo(midX, y1, midX, y2, x2, y2);
-        labelX = midX + 7;
-        labelY = (y1 + y2) / 2 - 5;
-      } else {
-        const direction = x2 === x1 ? 0 : Math.sign(x2 - x1);
-        const horizontalPull = Math.min(structural ? 64 : 90, Math.abs(x2 - x1) * 0.36) * direction;
-        const midY = y1 + Math.max(24, (y2 - y1) * 0.48);
-        ctx.moveTo(x1, y1);
-        ctx.bezierCurveTo(x1 + horizontalPull, midY, x2 - horizontalPull, midY, x2, y2);
-        labelX = (x1 + x2) / 2;
-        labelY = midY - 8;
-      }
-      ctx.stroke();
+      const selectedPath = selection.edgeIds.has(edge.id);
+      const dimmed = selectionActive && !selectedPath && traceCount === 0;
+      const baseColor = edgeBaseColor(structural, trueBranch, falseBranch, edge);
+      ctx.globalAlpha = dimmed ? 0.16 : 1;
+      ctx.strokeStyle = traceCount ? '#2ca9ff' : selectedPath ? highlightedEdgeColor(trueBranch, falseBranch, edge) : baseColor;
       ctx.fillStyle = ctx.strokeStyle;
+      ctx.lineWidth = traceCount ? 3.2 : selectedPath ? 2.7 : structural ? 1.35 : edge.kind === 'control' ? 1.5 : 1.8;
       ctx.beginPath();
-      if (horizontalDataEdge) {
-        const direction = x2 >= x1 ? 1 : -1;
-        ctx.moveTo(x2 - direction * 8, y2 - 5); ctx.lineTo(x2 - direction * 8, y2 + 5); ctx.lineTo(x2, y2); ctx.fill();
+
+      let labelX = 0;
+      let labelY = 0;
+      let arrowX = 0;
+      let arrowY = 0;
+      let arrowDx = 0;
+      let arrowDy = 1;
+
+      if (loop && positionedBounds) {
+        const leftDistance = Math.min(from.x, to.x) - positionedBounds.minX;
+        const rightDistance = positionedBounds.maxX - Math.max(from.x + from.width, to.x + to.width);
+        const useLeft = leftDistance <= rightDistance;
+        const laneOffset = 38 + loopLane * 24;
+        const laneX = useLeft ? positionedBounds.minX - laneOffset : positionedBounds.maxX + laneOffset;
+        const startX = useLeft ? from.x : from.x + from.width;
+        const startY = from.y + from.height * 0.58;
+        const endX = useLeft ? to.x : to.x + to.width;
+        const endY = to.y + Math.min(to.height - 18, Math.max(24, to.height * 0.5));
+        ctx.moveTo(startX, startY);
+        ctx.lineTo(laneX, startY);
+        ctx.lineTo(laneX, endY);
+        ctx.lineTo(endX, endY);
+        labelX = laneX + (useLeft ? -6 : 6);
+        labelY = (startY + endY) * 0.5;
+        arrowX = endX;
+        arrowY = endY;
+        arrowDx = useLeft ? 1 : -1;
+        arrowDy = 0;
+      } else if (horizontalDataEdge) {
+        const startX = to.x >= from.x ? from.x + from.width : from.x;
+        const startY = from.y + from.height / 2;
+        const endX = to.x >= from.x ? to.x : to.x + to.width;
+        const endY = to.y + to.height / 2;
+        const midX = (startX + endX) / 2;
+        ctx.moveTo(startX, startY);
+        ctx.bezierCurveTo(midX, startY, midX, endY, endX, endY);
+        labelX = midX + 7;
+        labelY = (startY + endY) / 2 - 5;
+        arrowX = endX;
+        arrowY = endY;
+        arrowDx = endX - midX;
+        arrowDy = endY - startY;
       } else {
-        ctx.moveTo(x2 - 5, y2 - 9); ctx.lineTo(x2 + 5, y2 - 9); ctx.lineTo(x2, y2); ctx.fill();
+        const startX = from.x + from.width / 2;
+        const startY = from.y + from.height;
+        const endX = to.x + to.width / 2;
+        const endY = to.y;
+        const direction = endX === startX ? 0 : Math.sign(endX - startX);
+        const horizontalPull = Math.min(structural ? 64 : 92, Math.abs(endX - startX) * 0.36) * direction;
+        const verticalDistance = endY - startY;
+        const midY = startY + (verticalDistance >= 0 ? Math.max(24, verticalDistance * 0.48) : verticalDistance * 0.5);
+        ctx.moveTo(startX, startY);
+        ctx.bezierCurveTo(startX + horizontalPull, midY, endX - horizontalPull, midY, endX, endY);
+        labelX = (startX + endX) / 2;
+        labelY = midY - 8;
+        arrowX = endX;
+        arrowY = endY;
+        arrowDx = horizontalPull || endX - startX;
+        arrowDy = endY - midY;
       }
 
-      if (labels && edge.label) {
-        if (trueBranch) drawPill(ctx, `T · ${edge.label}`, labelX, labelY, '#0f3023', '#66e1a1', '#247a52');
-        else if (falseBranch) drawPill(ctx, 'F · fallthrough', labelX, labelY, '#34171a', '#ff9196', '#874149');
+      ctx.stroke();
+      drawArrowHead(ctx, arrowX, arrowY, arrowDx, arrowDy, selectedPath || traceCount ? 9 : 8);
+
+      if (labels && edge.label && !dimmed) {
+        const loopSuffix = loop ? ' · loop' : '';
+        if (trueBranch) drawPill(ctx, `T · ${edge.label}${loopSuffix}`, labelX, labelY, '#0f3023', '#66e1a1', '#247a52');
+        else if (falseBranch) drawPill(ctx, `F · fallthrough${loopSuffix}`, labelX, labelY, '#34171a', '#ff9196', '#874149');
         else {
           ctx.font = `${structural ? 9 : 10}px ui-monospace, SFMono-Regular, Menlo, monospace`;
-          ctx.fillStyle = traceCount ? '#83d4ff' : structural ? '#607b90' : '#73889a';
-          ctx.fillText(edge.label, labelX + 7, labelY - 1);
+          ctx.fillStyle = traceCount ? '#83d4ff' : selectedPath ? '#8fd7ff' : structural ? '#607b90' : '#73889a';
+          const text = `${edge.label}${loopSuffix}`;
+          ctx.fillText(text, labelX + (loop ? (labelX < from.x ? -ctx.measureText(text).width - 7 : 7) : 7), labelY - 1);
         }
       }
-    }
+      ctx.globalAlpha = 1;
+    };
+
+    // Normal edges remain behind nodes. Loop/back-edges are rendered after nodes on dedicated outer lanes,
+    // so a cycle can never disappear underneath unrelated blocks.
+    for (const edge of graph.edges) if (!loopLaneById.has(edge.id)) drawEdge(edge);
 
     for (const node of positioned) {
       const selected = node.id === selectedId;
       const current = trace?.currentNodeId === node.id || (!!focusId && node.id === focusId);
       const executionCount = trace?.nodeCounts.get(node.id) ?? 0;
       const visited = executionCount > 0 && !current;
-      const state = { selected, current, visited, executionCount };
-      if (structural) drawStructureNode(ctx, node, selected);
+      const pathHighlighted = selection.nodeIds.has(node.id);
+      const dimmed = selectionActive && !pathHighlighted && !current;
+      const state = { selected, current, visited, pathHighlighted, dimmed, executionCount };
+      if (structural) drawStructureNode(ctx, node, state);
       else if (graph.viewKind === 'function-cfg' && node.blockInstructions?.length) drawCfgNode(ctx, graph, node, state);
       else drawCompactNode(ctx, node, state);
     }
+
+    for (const edge of graph.edges) if (loopLaneById.has(edge.id)) drawEdge(edge);
     ctx.restore();
-  }, [focusId, graph, grid, labels, measureHost, nodeById, positioned, selectedId, trace, viewport]);
+
+    if (positionedBounds) {
+      miniMapRef.current = drawMiniMap(ctx, width, height, positioned, positionedBounds, viewport, selectedId, selection.nodeIds);
+    } else {
+      miniMapRef.current = null;
+    }
+  }, [focusId, graph, grid, labels, loopLaneById, measureHost, nodeById, positioned, positionedBounds, selectedId, selection.edgeIds, selection.nodeIds, selectionActive, trace, viewport]);
 
   useEffect(() => {
     const canvas = canvasRef.current;
@@ -425,28 +633,27 @@ export function GraphPanel({
 
   const fitGraph = useCallback(() => {
     const measured = measureHost();
-    const bounds = boundsForNodes(positioned);
-    if (!measured || !bounds) {
+    if (!measured || !positionedBounds) {
       setViewport(DEFAULT_VIEWPORT);
       return;
     }
-    setViewport(viewportForBounds(bounds, measured.width, measured.height));
-  }, [measureHost, positioned]);
+    setViewport(viewportForBounds(positionedBounds, measured.width, measured.height));
+  }, [measureHost, positionedBounds]);
 
   useEffect(() => {
     fitGraph();
   }, [fitGraph, graph?.fileId, graph?.functionAddress, graph?.viewKind, positioned.length]);
 
   useEffect(() => {
-    // Structure is an overview surface: selecting a component updates Properties but must not destroy the fitted whole-binary view.
-    if (graph?.viewKind === 'binary-structure') return;
-    const targetId = trace?.currentNodeId ?? focusId ?? selectedId;
+    // Selection is inspection only: never move/zoom the canvas on click. Runtime execution-follow may still
+    // center the current RIP because that is an explicit debugger navigation event, not a selection side effect.
+    const targetId = trace?.currentNodeId ?? focusId;
     if (!targetId) return;
     const node = nodeById.get(targetId);
     const measured = measureHost();
     if (!node || !measured) return;
     setViewport((current) => centerViewport(node, measured.width, measured.height, Math.max(current.zoom, 0.72)));
-  }, [focusId, graph?.viewKind, measureHost, nodeById, selectedId, trace?.currentNodeId]);
+  }, [focusId, measureHost, nodeById, trace?.currentNodeId]);
 
   function screenToGraph(clientX: number, clientY: number) {
     const canvas = canvasRef.current!;
@@ -455,6 +662,34 @@ export function GraphPanel({
       x: (clientX - rect.left - viewport.x) / viewport.zoom,
       y: (clientY - rect.top - viewport.y) / viewport.zoom
     };
+  }
+
+  function screenPoint(clientX: number, clientY: number) {
+    const canvas = canvasRef.current!;
+    const rect = canvas.getBoundingClientRect();
+    return { x: clientX - rect.left, y: clientY - rect.top, width: rect.width, height: rect.height };
+  }
+
+  function pointInMiniMap(clientX: number, clientY: number): boolean {
+    const mini = miniMapRef.current;
+    if (!mini) return false;
+    const point = screenPoint(clientX, clientY);
+    return point.x >= mini.x && point.x <= mini.x + mini.width && point.y >= mini.y && point.y <= mini.y + mini.height;
+  }
+
+  function panFromMiniMap(clientX: number, clientY: number): boolean {
+    const mini = miniMapRef.current;
+    if (!mini) return false;
+    const point = screenPoint(clientX, clientY);
+    if (point.x < mini.x || point.x > mini.x + mini.width || point.y < mini.y || point.y > mini.y + mini.height) return false;
+    const graphX = mini.bounds.minX + (point.x - mini.plotX) / mini.scale;
+    const graphY = mini.bounds.minY + (point.y - mini.plotY) / mini.scale;
+    setViewport((current) => ({
+      ...current,
+      x: point.width * 0.5 - graphX * current.zoom,
+      y: point.height * 0.5 - graphY * current.zoom
+    }));
+    return true;
   }
 
   function pickNode(clientX: number, clientY: number) {
@@ -507,11 +742,13 @@ export function GraphPanel({
             });
           }}
           onMouseDown={(event) => {
+            if (panFromMiniMap(event.clientX, event.clientY)) return;
             const node = pickNode(event.clientX, event.clientY);
             if (node) { onSelect(node.id); return; }
             setDrag({ x: event.clientX, y: event.clientY, originX: viewport.x, originY: viewport.y });
           }}
           onDoubleClick={(event) => {
+            if (pointInMiniMap(event.clientX, event.clientY)) return;
             const node = pickNode(event.clientX, event.clientY);
             if (!node) return;
             onSelect(node.id);
