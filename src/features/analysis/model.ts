@@ -2,6 +2,11 @@ import type { CanonicalMemoryOperand, CanonicalOperand } from '../binary/model';
 
 export type GraphNodeKind = 'label' | 'instruction' | 'branch' | 'call' | 'syscall' | 'data';
 
+export interface GraphNodeProperty {
+  label: string;
+  value: string;
+}
+
 export interface GraphNode {
   id: string;
   line: number;
@@ -12,6 +17,8 @@ export interface GraphNode {
   x?: number;
   y?: number;
   evidence?: string;
+  category?: string;
+  properties?: GraphNodeProperty[];
   registerReads?: string[];
   registerWrites?: string[];
   bytes?: number[];
@@ -46,7 +53,7 @@ export interface AnalysisGraph {
   sourceKind?: 'asm-source' | 'disassembly-dump' | 'raw-elf-capstone';
   architecture?: string;
   entryAddress?: number;
-  viewKind?: 'source-flow' | 'function-cfg' | 'program-flow' | 'dataflow';
+  viewKind?: 'source-flow' | 'function-cfg' | 'program-flow' | 'dataflow' | 'binary-structure';
   functionAddress?: number;
   functionName?: string;
   dataflowProjection?: 'flow' | 'registers' | 'memory' | 'calls' | 'raw';
