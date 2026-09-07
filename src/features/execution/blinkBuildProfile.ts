@@ -17,6 +17,7 @@ export interface BlinkBuildProfile {
   build: {
     disableJit: true;
     nonPosixLinuxApis: true;
+    headlessSignalRegisters: true;
   };
   artifacts?: {
     jsSha256?: string;
@@ -69,6 +70,7 @@ export function validateBlinkBuildProfile(value: unknown): BlinkBuildProfileVali
   if (!build) return { ok: false, reason: 'Blink build profile is missing build capabilities.', profile: null };
   if (build.disableJit !== true) return { ok: false, reason: 'Blink browser build must explicitly disable JIT.', profile: null };
   if (build.nonPosixLinuxApis !== true) return { ok: false, reason: 'Blink browser build must keep Linux non-POSIX APIs enabled for glibc process startup.', profile: null };
+  if (build.headlessSignalRegisters !== true) return { ok: false, reason: 'Blink browser build must publish fresh register state for headless Run signals/preemptions.', profile: null };
 
   return { ok: true, reason: null, profile: value as BlinkBuildProfile };
 }
