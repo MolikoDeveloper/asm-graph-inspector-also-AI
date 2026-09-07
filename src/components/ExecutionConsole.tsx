@@ -25,6 +25,10 @@ function byteCount(bytes: number): string {
   return `${(bytes / (1024 * 1024)).toFixed(2)} MiB`;
 }
 
+function bytesHex(bytes: readonly number[]): string {
+  return bytes.map((byte) => byte.toString(16).padStart(2, '0')).join(' ');
+}
+
 const REGISTER_ROWS = [
   ['rax', 'rbx', 'rcx', 'rdx'],
   ['rsi', 'rdi', 'rbp', 'rsp'],
@@ -40,6 +44,7 @@ export function ExecutionConsole({
   buildEntries,
   onPrepare,
   onRun,
+  onProbe,
   onPause,
   onStep,
   onReset
@@ -51,6 +56,7 @@ export function ExecutionConsole({
   buildEntries: readonly DebugLogEntryLike[];
   onPrepare(): void;
   onRun(): void;
+  onProbe(): void;
   onPause(): void;
   onStep(): void;
   onReset(): void;
@@ -59,6 +65,7 @@ export function ExecutionConsole({
   const running = snapshot.status === 'running';
   const terminal = snapshot.status === 'exited' || snapshot.status === 'halted' || snapshot.status === 'trapped';
   const registers = snapshot.registers;
+  const crash = snapshot.crash ?? null;
   const [autoStepping, setAutoStepping] = useState(false);
   const [autoDelay, setAutoDelay] = useState(50);
   const [lastStepMs, setLastStepMs] = useState<number | null>(null);
@@ -153,14 +160,22 @@ export function ExecutionConsole({
     onStep();
   }
 
-  function performRun() {
+  function beginTimedRun(action: () => void) {
     setAutoStepping(false);
     stepInFlight.current = false;
     runRequested.current = true;
     runCommandStartedAt.current = performance.now();
     runStartedAt.current = null;
     setRunElapsedMs(null);
-    onRun();
+    action();
+  }
+
+  function performRun() {
+    beginTimedRun(onRun);
+  }
+
+  function performProbe() {
+    beginTimedRun(onProbe);
   }
 
   function performPause() {
@@ -214,16 +229,17 @@ export function ExecutionConsole({
     const argument = rest.join(' ');
     switch (verb.toLowerCase()) {
       case 'help':
-        addCliLine('[inspector] :run :step :auto :stop :pause :reset :status :clear :stdin <text> · plain text -> guest stdin');
+        addCliLine('[inspector] :run :probe :step :auto :stop :pause :reset :status :clear :stdin <text> · plain text -> guest stdin');
         break;
       case 'run': performRun(); break;
+      case 'probe': performProbe(); break;
       case 'step': performStep(); break;
       case 'auto': setAutoStepping(true); break;
       case 'stop': setAutoStepping(false); stepInFlight.current = false; break;
       case 'pause': performPause(); break;
       case 'reset': performReset(); break;
       case 'status':
-        addCliLine(`[inspector] ${snapshot.status} · ${snapshot.provider ?? 'no provider'} · ${snapshot.instructionCount.toLocaleString()} stepped instruction(s) · ISA preflight ${preflight.status}`);
+        addCliLine(`[inspector] ${snapshot.status} · ${snapshot.provider ?? 'no provider'} · ${snapshot.instructionCount.toLocaleString()} stepped instruction(s) · ISA preflight ${preflight.status}${crash ? ` · ${crash.signalName} @ ${hex(crash.runtimeAddress)}` : ''}`);
         break;
       case 'clear':
         setStdoutOffset(snapshot.stdout.length);
@@ -256,6 +272,7 @@ export function ExecutionConsole({
             <option value={16}>16 ms</option><option value={50}>50 ms</option><option value={150}>150 ms</option><option value={500}>500 ms</option>
           </select>
           <button type="button" disabled={!supported || running || terminal || autoStepping} onClick={performRun} title="Run in bounded browser batches"><Play size={13} /> Run</button>
+          {preflight.status === 'incompatible' ? <button type="button" className="execution-probe" disabled={!supported || running || autoStepping} onClick={performProbe} title="Explicitly run an ISA-incompatible ELF only to capture the observed Blink signal/RIP"><Play size={13} /> Probe failure</button> : null}
           <button type="button" disabled={!running && !autoStepping} onClick={performPause} title="Pause Run or stop Auto Step"><Pause size={13} /> Pause</button>
           <button type="button" disabled={!supported || running} onClick={performReset} title="Reload execution mappings and machine state"><RotateCcw size={13} /> Reset</button>
         </div>
@@ -276,7 +293,7 @@ export function ExecutionConsole({
           {preflight.status !== 'idle' ? (
             <section className={`execution-preflight ${preflight.status}`}>
               <div className="execution-preflight-heading">
-                <strong>Blink ISA preflight</strong>
+                <strong>Static Blink ISA preflight</strong>
                 <code>{preflightLabel}</code>
               </div>
               <div className="execution-preflight-progress" aria-label={`Blink ISA preflight ${preflightPercent.toFixed(0)} percent`}>
@@ -290,10 +307,11 @@ export function ExecutionConsole({
               {preflight.evidence.length ? (
                 <div className="execution-preflight-evidence">
                   {preflight.evidence.slice(0, 6).map((item, index) => (
-                    <code key={`${item.address}:${item.mnemonic}:${index}`}>0x{item.address.toString(16)} · {item.mnemonic}{item.operands ? ` ${item.operands}` : ''} · {item.family}</code>
+                    <code key={`${item.address}:${item.mnemonic}:${index}`}>static · 0x{item.address.toString(16)} · {item.mnemonic}{item.operands ? ` ${item.operands}` : ''} · [{bytesHex(item.bytes)}] · {item.family}</code>
                   ))}
                 </div>
               ) : null}
+              {preflight.status === 'incompatible' ? <small className="execution-preflight-note">Static evidence proves the ELF contains unsupported executable instructions; it does not claim those instructions were reached. Use <b>Probe failure</b> only when you need the actually observed Blink signal/RIP.</small> : null}
               {preflight.message && preflight.status !== 'scanning' ? <p>{preflight.message}</p> : null}
             </section>
           ) : null}
@@ -310,7 +328,22 @@ export function ExecutionConsole({
               <span><b>RFLAGS</b><code>{hex(registers?.rflags)}</code></span>
               <span><b>Last</b><code>{snapshot.lastInstruction ? `${snapshot.lastInstruction.mnemonic} ${snapshot.lastInstruction.operands}`.trim() : '—'}</code></span>
             </div>
-            {registers ? <div className="execution-registers">{REGISTER_ROWS.flat().map((name) => <span key={name}><b>{name.toUpperCase()}</b><code>{hex(registers[name])}</code></span>)}</div> : <div className="execution-empty compact">{snapshot.provider === 'blink-process' ? 'Process Run uses Blink headless compatibility mode; register snapshots are available after Reset + Step.' : 'Prepare the session to initialize registers and mappings.'}</div>}
+            {registers ? <div className="execution-registers">{REGISTER_ROWS.flat().map((name) => <span key={name}><b>{name.toUpperCase()}</b><code>{hex(registers[name])}</code></span>)}</div> : <div className="execution-empty compact">{snapshot.provider === 'blink-process' ? 'Blink register state appears after the first headless signal/preemption or after Step initialization.' : 'Prepare the session to initialize registers and mappings.'}</div>}
+            {crash ? (
+              <section className="execution-crash">
+                <div className="execution-crash-heading"><strong>Observed runtime failure</strong><code>{crash.signalName} · signal {crash.signal} · code {crash.signalCode} · exit {crash.exitCode}</code></div>
+                <div className="execution-crash-grid">
+                  <span><b>Runtime RIP</b><code>{hex(crash.runtimeAddress)}</code></span>
+                  <span><b>Image</b><code>{crash.imageName ?? 'unresolved'}{crash.imageRole ? ` · ${crash.imageRole}` : ''}</code></span>
+                  <span><b>ELF address</b><code>{hex(crash.imageAddress)}</code></span>
+                  <span><b>Load bias</b><code>{hex(crash.loadBias)}</code></span>
+                  <span><b>Function</b><code>{crash.functionName ? `${crash.functionName}${crash.functionOffset ? `+0x${crash.functionOffset.toString(16)}` : ''}` : 'unresolved'}</code></span>
+                  <span><b>ISA evidence</b><code>{crash.isaFamily ?? 'none from decoded faulting instruction'}</code></span>
+                </div>
+                {crash.instruction ? <pre><b>instruction</b> 0x{crash.instruction.address.toString(16)}  {crash.instruction.mnemonic}{crash.instruction.operands ? ` ${crash.instruction.operands}` : ''}\n<b>bytes</b>       {bytesHex(crash.instruction.bytes)}</pre> : crash.codeBytes.length ? <pre><b>bytes @ RIP</b> {bytesHex(crash.codeBytes)}</pre> : null}
+                <small>This block is observed runtime evidence captured at Blink's fatal-signal boundary. Unlike the static ISA preflight, this RIP was reached by this execution.</small>
+              </section>
+            ) : null}
             {snapshot.providerDiagnostics.length ? (
               <details className="execution-provider-diagnostics" open={terminal}>
                 <summary>Provider diagnostics · {snapshot.providerDiagnostics.reduce((total, item) => total + item.count, 0)} event(s)</summary>
@@ -321,7 +354,7 @@ export function ExecutionConsole({
                 </div>
               </details>
             ) : null}
-            {snapshot.trapReason ? <div className="execution-trap"><strong>Trap</strong><span>{snapshot.trapReason}</span></div> : null}
+            {!crash && snapshot.trapReason ? <div className="execution-trap"><strong>Trap</strong><span>{snapshot.trapReason}</span></div> : null}
             {snapshot.exitCode !== null ? <div className="execution-exit">Process exited with code <code>{snapshot.exitCode}</code>.</div> : null}
           </section>
 
