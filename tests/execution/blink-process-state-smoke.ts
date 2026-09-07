@@ -1,4 +1,4 @@
-import type { LoadedImage } from '../../src/features/binary/model';
+import type { ElfSymbol, LoadedImage } from '../../src/features/binary/model';
 import type { ProjectFile } from '../../src/features/project/model';
 import { BlinkProcessSession, type BlinkModule, type BlinkProcessRuntime } from '../../src/features/execution/blinkProcessSession';
 import { DEFAULT_EXECUTION_POLICY } from '../../src/features/execution/model';
@@ -18,6 +18,8 @@ const ENTRY = 0x406820n;
 const DIS_BUFFER = 16384;
 const DIS_MAX_LINES = 4;
 const DIS_LINE_LEN = 160;
+
+type FakeRunOutcome = 'exit' | 'sigill';
 
 class FakeBlinkModule implements BlinkModule {
   readonly wasmExports = { memory: new WebAssembly.Memory({ initial: 1 }) };
@@ -39,12 +41,11 @@ class FakeBlinkModule implements BlinkModule {
     analyzePath: (_path: string) => ({ exists: false })
   };
 
-  constructor() {
+  constructor(private readonly runOutcome: FakeRunOutcome = 'exit') {
     const view = new DataView(this.wasmExports.memory.buffer);
     view.setUint32(CLSTRUCT + CL.version * 4, 1, true);
     let pointer = 8192;
     for (const index of [CL.flags, CL.csBase, CL.rip, CL.rsp, CL.rbp, CL.rsi, CL.rdi, CL.r8, CL.r9, CL.r10, CL.r11, CL.r12, CL.r13, CL.r14, CL.r15, CL.rax, CL.rbx, CL.rcx, CL.rdx]) {
-      if (index === CL.version) continue;
       view.setUint32(CLSTRUCT + index * 4, pointer, true);
       view.setBigUint64(pointer, 0n, true);
       pointer += 16;
@@ -103,10 +104,18 @@ class FakeBlinkModule implements BlinkModule {
   _blinkenlib_get_progname_string(): number { return 1024; }
 
   _blinkenlib_run_fast(): void {
-    // Simulate a complete guest process with no user interaction.
+    if (this.runOutcome === 'sigill') {
+      // Model the patched wrapper contract: architectural state is refreshed
+      // before the fatal signal callback crosses the WASM -> JS boundary.
+      this.writeRegister(CL.rip, ENTRY + 4n);
+      this.writeRegister(CL.rax, 0x1234n);
+      if (this.signalCallbackId !== null) this.callbacks.get(this.signalCallbackId)?.(4, 2);
+      return;
+    }
     this.output?.('h'.charCodeAt(0));
     this.output?.('i'.charCodeAt(0));
     this.output?.('\n'.charCodeAt(0));
+    this.writeRegister(CL.rip, ENTRY + 8n);
     if (this.exitCallbackId !== null) this.callbacks.get(this.exitCallbackId)?.(0);
   }
 
@@ -156,6 +165,19 @@ const bytes = programBytes.buffer;
 const file: ProjectFile = {
   id: 'blink-smoke', path: 'blink-smoke', name: 'blink-smoke', kind: 'binary', language: 'binary', bytes, size: bytes.byteLength, updatedAt: 1
 };
+const startSymbol: ElfSymbol = {
+  index: 0,
+  tableSectionIndex: 0,
+  name: '_start',
+  value: Number(ENTRY),
+  size: 16,
+  binding: 1,
+  type: 2,
+  visibility: 0,
+  sectionIndex: 1,
+  defined: true,
+  functionLike: true
+};
 const image = {
   schema: 'asm-graph.loaded-image/v1', sourceFileId: file.id, sourcePath: file.path, architecture: 'x86-64', byteOrder: 'little', kind: 'executable', entry: Number(ENTRY), buildId: null, soname: null,
   neededLibraries: ['libc.so.6'], interpreter: '/lib64/ld-linux-x86-64.so.2',
@@ -164,7 +186,7 @@ const image = {
     fileSize: bytes.byteLength, memorySize: bytes.byteLength, alignment: 0x1000,
     readable: true, writable: false, executable: true
   }],
-  sections: [], symbols: [], relocations: [], functions: [],
+  sections: [], symbols: [startSymbol], relocations: [], functions: [startSymbol],
   unwind: { available: false, cies: [], fdes: [], errors: [], cfiDiagnostics: [], cfiRowCount: 0 }
 } as LoadedImage;
 
@@ -203,16 +225,42 @@ try {
   stepSession.dispose();
 }
 
-const runModule = new FakeBlinkModule();
+const runModule = new FakeBlinkModule('exit');
 const runSession = await BlinkProcessSession.create(file, image, DEFAULT_EXECUTION_POLICY, runtimeFor(runModule));
 try {
   const exited = runSession.runSlice();
   assertEqual(exited.status, 'exited', 'Blink headless Run status');
   assertEqual(exited.exitCode, 0, 'Blink headless Run exit code');
   assertEqual(exited.stdout, 'hi\n', 'Blink headless Run stdout');
-  assertEqual(exited.registers, null, 'Blink headless Run register suppression');
+  assertEqual(exited.registers?.rip, ENTRY + 8n, 'Blink headless Run publishes fresh registers');
+  assertEqual(exited.crash ?? null, null, 'successful Blink Run has no crash evidence');
 } finally {
   runSession.dispose();
 }
 
-console.log('blink process state smoke: PASS (Prepare/Step image identity + executed-program trace + Reset-boundary + headless Run/exit)');
+const crashModule = new FakeBlinkModule('sigill');
+const crashSession = await BlinkProcessSession.create(file, image, DEFAULT_EXECUTION_POLICY, runtimeFor(crashModule));
+try {
+  const trapped = crashSession.runSlice();
+  assertEqual(trapped.status, 'trapped', 'Blink headless fatal signal status');
+  assertEqual(trapped.exitCode, 132, 'SIGILL shell-style exit code');
+  assertEqual(trapped.registers?.rip, ENTRY + 4n, 'fatal-signal register RIP');
+  assertEqual(trapped.registers?.rax, 0x1234n, 'fatal-signal general register');
+  assertEqual(trapped.crash?.signal, 4, 'fatal-signal number');
+  assertEqual(trapped.crash?.signalName, 'SIGILL', 'fatal-signal name');
+  assertEqual(trapped.crash?.signalCode, 2, 'fatal-signal code');
+  assertEqual(trapped.crash?.runtimeAddress, ENTRY + 4n, 'observed crash runtime RIP');
+  assertEqual(trapped.crash?.imageName, 'blink-smoke', 'observed crash image');
+  assertEqual(trapped.crash?.imageRole, 'program', 'observed crash image role');
+  assertEqual(trapped.crash?.imageAddress, ENTRY + 4n, 'observed crash ELF address');
+  assertEqual(trapped.crash?.functionName, '_start', 'observed crash function');
+  assertEqual(trapped.crash?.functionOffset, 4, 'observed crash function offset');
+  assertEqual(trapped.crash?.codeBytes.slice(0, 3).join(' '), '73 137 209', 'observed crash raw instruction bytes');
+  assertIncludes(trapped.trapReason, 'SIGILL', 'fatal-signal diagnostic signal');
+  assertIncludes(trapped.trapReason, 'RIP 0x406824', 'fatal-signal diagnostic RIP');
+  assertIncludes(trapped.trapReason, '_start+0x4', 'fatal-signal diagnostic function');
+} finally {
+  crashSession.dispose();
+}
+
+console.log('blink process state smoke: PASS (Step image identity + headless fresh registers + observed fatal-signal RIP/function/bytes)');
