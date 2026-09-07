@@ -27,13 +27,16 @@ export function InspectorPanel({ graph, selectedId, stale = false, onNavigate }:
       {node ? (
         <div className="inspector-content">
           {stale ? <div className="inspector-stale-notice">Current ASM has problems. Showing the last valid analysis snapshot.</div> : null}
-          <span className="inspector-eyebrow">{node.kind}</span>
+          <span className="inspector-eyebrow">{node.category ?? node.kind}</span>
           <h3>{node.title}</h3>
+          <p className="inspector-node-detail">{node.detail}</p>
           <dl className="property-list">
+            {node.category ? <div><dt>Category</dt><dd>{node.category}</dd></div> : null}
             <div><dt>Line</dt><dd>{node.line || '—'}</dd></div>
             <div><dt>Kind</dt><dd>{node.kind}</dd></div>
-            <div><dt>Address</dt><dd>{node.address !== undefined ? `0x${node.address.toString(16)}` : 'source-only'}</dd></div>
+            <div><dt>Address</dt><dd>{node.address !== undefined ? `0x${node.address.toString(16)}` : graph?.viewKind === 'binary-structure' ? 'not addressable' : 'source-only'}</dd></div>
             {node.bytes?.length ? <div><dt>Bytes</dt><dd>{node.bytes.map((byte) => byte.toString(16).padStart(2, '0')).join(' ')}</dd></div> : null}
+            {node.properties?.map((property, index) => <div key={`${property.label}:${index}`}><dt>{property.label}</dt><dd>{property.value}</dd></div>)}
           </dl>
           <section className="inspector-section"><h4><GitFork size={14} /> Connections</h4><p>{graph?.edges.filter((edge) => edge.from === node.id || edge.to === node.id).length ?? 0} graph edges touch this node.</p></section>
           <section className="inspector-section"><h4><Braces size={14} /> Evidence</h4><p>{node.evidence ?? (graph?.sourceKind === 'raw-elf-capstone' ? 'Raw ELF bytes + canonical Capstone decode.' : 'Assembly parser · active source file.')}</p></section>
