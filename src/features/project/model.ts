@@ -1,5 +1,13 @@
 export type ProjectFileKind = 'text' | 'binary';
 
+export interface GeneratedProjectFileInfo {
+  kind: 'assembly-build';
+  backendId: string;
+  sourceFileIds: string[];
+  artifactKind: 'elf-executable' | 'elf-object' | 'flat-binary';
+  builtAt: number;
+}
+
 export interface ProjectFile {
   id: string;
   path: string;
@@ -10,6 +18,7 @@ export interface ProjectFile {
   bytes?: ArrayBuffer;
   size: number;
   updatedAt: number;
+  generated?: GeneratedProjectFileInfo;
 }
 
 export interface InspectorProject {
