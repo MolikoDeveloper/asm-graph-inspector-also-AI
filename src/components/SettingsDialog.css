@@ -1,0 +1,176 @@
+.settings-content {
+  min-width: 0;
+  overflow: auto;
+}
+
+.settings-section-heading {
+  margin: 0 0 18px;
+}
+
+.settings-section-heading h2 {
+  margin: 0 0 5px;
+  font-size: 17px;
+  color: #e2ecf5;
+}
+
+.settings-section-heading p {
+  margin: 0;
+  max-width: 760px;
+  color: #7d91a3;
+  font-size: 11px;
+  line-height: 1.55;
+}
+
+.settings-note-card {
+  margin: 14px 0 18px;
+  padding: 12px 13px;
+  border: 1px solid #263845;
+  border-radius: 7px;
+  background: #0b131a;
+  color: #91a5b6;
+  font-size: 11px;
+  line-height: 1.5;
+}
+
+.settings-note-card strong { color: #d5e2ec; }
+
+.runtime-routing-grid,
+.runtime-engine-grid {
+  display: grid;
+  gap: 10px;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  margin: 12px 0 20px;
+}
+
+.runtime-route-card,
+.runtime-engine-card {
+  min-width: 0;
+  padding: 12px;
+  border: 1px solid #263846;
+  border-radius: 8px;
+  background: linear-gradient(180deg, #0e171f 0%, #0b1218 100%);
+}
+
+.runtime-route-card header,
+.runtime-engine-card header {
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  min-height: 24px;
+  margin-bottom: 8px;
+}
+
+.runtime-route-card header strong,
+.runtime-engine-card header strong {
+  min-width: 0;
+  color: #d9e6f0;
+  font-size: 12px;
+}
+
+.runtime-route-card header svg,
+.runtime-engine-card header svg { color: #62b9f2; }
+.runtime-route-card p,
+.runtime-engine-card p { margin: 0; color: #7f93a5; font-size: 10px; line-height: 1.5; }
+.runtime-route-card code,
+.runtime-engine-card code { color: #9fc1d8; font: 10px ui-monospace, SFMono-Regular, Menlo, monospace; }
+
+.runtime-badge {
+  margin-left: auto;
+  padding: 2px 6px;
+  border: 1px solid #324656;
+  border-radius: 999px;
+  color: #8fa7b9;
+  background: #101a22;
+  font: 9px ui-monospace, SFMono-Regular, Menlo, monospace;
+  white-space: nowrap;
+}
+
+.runtime-badge.ready { color: #7fe0aa; border-color: #285b43; background: #0d2118; }
+.runtime-badge.lazy { color: #8fc5e8; border-color: #29506b; background: #0d1d28; }
+.runtime-badge.warning { color: #e0bb7a; border-color: #634b29; background: #241b0e; }
+.runtime-badge.error { color: #ef8d94; border-color: #66343a; background: #281215; }
+
+.runtime-engine-actions {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin-top: 11px;
+}
+
+.runtime-engine-actions button {
+  height: 28px;
+  padding: 0 9px;
+  border: 1px solid #31506a;
+  border-radius: 5px;
+  background: #102436;
+  color: #bcd9ee;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.runtime-engine-actions button:hover:not(:disabled) { background: #15314a; border-color: #3c7298; color: #eef8ff; }
+.runtime-engine-actions button:disabled { opacity: .45; cursor: default; }
+.runtime-engine-error { color: #e2858c !important; margin-top: 8px !important; }
+
+.runtime-capability-table {
+  width: 100%;
+  margin-top: 11px;
+  border-collapse: collapse;
+  font-size: 10px;
+}
+
+.runtime-capability-table th,
+.runtime-capability-table td {
+  padding: 6px 5px;
+  border-top: 1px solid #20313d;
+  text-align: left;
+}
+
+.runtime-capability-table th { color: #71879a; font-weight: 500; }
+.runtime-capability-table td { color: #afbfcc; }
+.runtime-capability-table td:last-child { text-align: right; font-family: ui-monospace, SFMono-Regular, Menlo, monospace; }
+.runtime-capability-table .supported { color: #71d59c; }
+.runtime-capability-table .unsupported { color: #e47f87; }
+
+.runtime-contract {
+  display: grid;
+  grid-template-columns: 140px minmax(0, 1fr);
+  gap: 0;
+  margin-top: 12px;
+  border: 1px solid #253744;
+  border-radius: 7px;
+  overflow: hidden;
+}
+
+.runtime-contract dt,
+.runtime-contract dd {
+  margin: 0;
+  padding: 8px 10px;
+  border-bottom: 1px solid #1d2c37;
+  font-size: 10px;
+}
+.runtime-contract dt { color: #74899b; background: #0d151c; }
+.runtime-contract dd { color: #b1c2cf; background: #0a1117; }
+.runtime-contract dt:last-of-type,
+.runtime-contract dd:last-of-type { border-bottom: 0; }
+
+.runtime-asset-list {
+  margin-top: 9px;
+  border-top: 1px solid #21313d;
+}
+.runtime-asset-list div {
+  display: grid;
+  grid-template-columns: 64px minmax(0, 1fr);
+  gap: 8px;
+  padding: 6px 0;
+  border-bottom: 1px solid #182630;
+}
+.runtime-asset-list span { color: #657c8e; font-size: 9px; }
+.runtime-asset-list code { overflow-wrap: anywhere; }
+
+@media (max-width: 760px) {
+  .runtime-routing-grid,
+  .runtime-engine-grid { grid-template-columns: minmax(0, 1fr); }
+  .runtime-contract { grid-template-columns: 110px minmax(0, 1fr); }
+}
