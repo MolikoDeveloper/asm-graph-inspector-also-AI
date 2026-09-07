@@ -25,7 +25,7 @@ function layoutFunctionCfg(graph: AnalysisGraph): PositionedGraphNode[] {
 
   const blockIds = new Set(blocks.map((node) => node.id));
   const outgoing = new Map<string, string[]>();
-  const incomingCount = new Map(blocks.map((node) => [node.id, 0] as const));
+  const incomingCount = new Map<string, number>(blocks.map((node) => [node.id, 0]));
 
   for (const edge of graph.edges) {
     if (!blockIds.has(edge.from) || !blockIds.has(edge.to) || edge.from === edge.to) continue;
@@ -128,7 +128,7 @@ function layoutProgramFlow(graph: AnalysisGraph): PositionedGraphNode[] {
 
   const nodeIds = new Set(nodes.map((node) => node.id));
   const outgoing = new Map<string, string[]>();
-  const incomingCount = new Map<string, number>(nodes.map((node) => [node.id, 0] as const));
+  const incomingCount = new Map<string, number>(nodes.map((node) => [node.id, 0]));
   for (const edge of graph.edges) {
     if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to) || edge.from === edge.to) continue;
     const list = outgoing.get(edge.from) ?? [];
