@@ -438,13 +438,14 @@ export function GraphPanel({
   }, [fitGraph, graph?.fileId, graph?.functionAddress, graph?.viewKind, positioned.length]);
 
   useEffect(() => {
+    // Structure is an overview surface: selecting a component updates Properties but must not destroy the fitted whole-binary view.
+    if (graph?.viewKind === 'binary-structure') return;
     const targetId = trace?.currentNodeId ?? focusId ?? selectedId;
     if (!targetId) return;
     const node = nodeById.get(targetId);
     const measured = measureHost();
     if (!node || !measured) return;
-    const minimumFollowZoom = graph?.viewKind === 'binary-structure' ? 0.55 : 0.72;
-    setViewport((current) => centerViewport(node, measured.width, measured.height, Math.max(current.zoom, minimumFollowZoom)));
+    setViewport((current) => centerViewport(node, measured.width, measured.height, Math.max(current.zoom, 0.72)));
   }, [focusId, graph?.viewKind, measureHost, nodeById, selectedId, trace?.currentNodeId]);
 
   function screenToGraph(clientX: number, clientY: number) {
