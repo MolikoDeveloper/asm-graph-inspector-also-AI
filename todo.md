@@ -45,11 +45,13 @@ real ELF/object/flat bytes
 
 ## Checkpoint 2 — Blink tool runner
 
-- [ ] Implement `BlinkToolProcessRunner` using a dedicated ephemeral Blink/MEMFS session.
-- [ ] Mount only explicit toolchain binaries and `/work` inputs; never inherit host/browser filesystem state.
-- [ ] Capture tool stdout/stderr/exit code and retrieve declared output files.
-- [ ] Enforce bounded execution/time/output policy for tool processes.
-- [ ] Add deterministic tests with a minimal executable tool fixture before wiring NASM.
+- [x] Implement `BlinkToolProcessRunner` using a dedicated ephemeral Blink/MEMFS session.
+- [x] Mount only explicit toolchain binaries and `/work` inputs; never inherit host/browser filesystem state.
+- [x] Capture tool stdout/stderr/exit code and retrieve declared output files.
+- [x] Enforce bounded execution/time/output policy for tool processes.
+- [x] Add deterministic tests with a minimal executable tool fixture before wiring NASM.
+
+The pinned Blink browser bridge tokenizes its argument string on spaces and currently leaves guest environment variables unimplemented. The tool runner therefore rejects whitespace-bearing individual argv tokens and non-empty `env` explicitly rather than silently misrepresenting them. Generated NASM work paths are normalized to bridge-safe ASCII names.
 
 ## Checkpoint 3 — real NASM + GNU ld toolchain
 
