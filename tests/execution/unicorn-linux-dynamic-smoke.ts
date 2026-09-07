@@ -72,13 +72,21 @@ function failureContext(snapshot: ExecutionSnapshot, fault: string): string {
   const runtime = snapshot.runtimeDisassembly?.image
     ? `runtime=${snapshot.runtimeDisassembly.image.role}:${snapshot.runtimeDisassembly.image.name} rip=0x${snapshot.runtimeDisassembly.image.runtimeAddress.toString(16)} image=0x${snapshot.runtimeDisassembly.image.imageAddress.toString(16)}`
     : 'runtime=<unresolved>';
+  const registers = snapshot.registers
+    ? `regs=rip:0x${snapshot.registers.rip.toString(16)},rsp:0x${snapshot.registers.rsp.toString(16)},rbp:0x${snapshot.registers.rbp.toString(16)},rax:0x${snapshot.registers.rax.toString(16)},rbx:0x${snapshot.registers.rbx.toString(16)},rcx:0x${snapshot.registers.rcx.toString(16)},rdx:0x${snapshot.registers.rdx.toString(16)},rsi:0x${snapshot.registers.rsi.toString(16)},rdi:0x${snapshot.registers.rdi.toString(16)},r8:0x${snapshot.registers.r8.toString(16)},r9:0x${snapshot.registers.r9.toString(16)},r10:0x${snapshot.registers.r10.toString(16)},r11:0x${snapshot.registers.r11.toString(16)},r12:0x${snapshot.registers.r12.toString(16)},r13:0x${snapshot.registers.r13.toString(16)},r14:0x${snapshot.registers.r14.toString(16)},r15:0x${snapshot.registers.r15.toString(16)}`
+    : 'regs=<none>';
+  const recentInstructions = snapshot.events
+    .filter((event) => event.kind === 'instruction')
+    .slice(-24)
+    .map((event) => event.kind === 'instruction' ? `0x${event.address.toString(16)}:${event.mnemonic}${event.operands ? ` ${event.operands}` : ''}` : '')
+    .join(' <- ');
   const syscalls = snapshot.events
     .filter((event) => event.kind === 'syscall')
     .slice(-12)
     .map((event) => event.kind === 'syscall' ? `${event.name}(${event.detail})` : '')
     .join(' <- ');
   const diagnostics = snapshot.providerDiagnostics.slice(-3).map((entry) => entry.message).join(' | ');
-  return [snapshot.trapReason ?? 'dynamic Unicorn session did not exit', instruction, fault, runtime, `instructions=${snapshot.instructionCount}`, `recent-syscalls=${syscalls || '<none>'}`, `provider=${diagnostics || '<none>'}`].join(' ; ');
+  return [snapshot.trapReason ?? 'dynamic Unicorn session did not exit', instruction, fault, runtime, registers, `instructions=${snapshot.instructionCount}`, `recent-instructions=${recentInstructions || '<none>'}`, `recent-syscalls=${syscalls || '<none>'}`, `provider=${diagnostics || '<none>'}`].join(' ; ');
 }
 
 const temp = mkdtempSync(join(tmpdir(), 'asm-graph-unicorn-linux-'));
