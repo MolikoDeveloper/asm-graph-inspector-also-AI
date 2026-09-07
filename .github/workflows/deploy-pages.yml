@@ -47,6 +47,9 @@ jobs:
       - name: Build Blink WASM runtime
         run: bun run vendor:blink
 
+      - name: Vendor Unicorn x86 runtime
+        run: bun run vendor:unicorn
+
       - name: Vendor pinned NASM + GNU ld
         run: bun run vendor:toolchain
 
