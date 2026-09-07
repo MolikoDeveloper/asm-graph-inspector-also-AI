@@ -99,10 +99,10 @@ Blink Step now indexes the main executable plus the materialized `PT_INTERP`/rec
 
 ## Checkpoint 7 — text dump classification/import
 
-- [ ] Detect objdump/disassembly text by content instead of trusting the `.asm` extension.
-- [ ] Route objdump text to a dedicated importer/parser, never to the NASM source parser.
+- [x] Detect objdump/disassembly text by content instead of trusting the `.asm` extension.
+- [x] Route objdump text to a dedicated importer/parser, never to the NASM source parser.
 - [ ] Treat dump text as analysis evidence/annotation when authoritative binary bytes are also available.
-- [ ] Never use objdump text in place of ELF bytes for binary execution.
+- [x] Never use objdump text in place of ELF bytes for binary execution.
 
 ## Checkpoint 8 — FASM backend
 
@@ -126,10 +126,12 @@ The large VZed `ray_test` regression proved that ELF ISA notes are not sufficien
 - [x] Report the first unsupported instruction with virtual address, mnemonic, operands, bytes and executable segment evidence.
 - [x] Treat GNU/ELF ISA notes as advisory; never allow metadata claiming `x86-64-baseline` to override contradictory executable bytes.
 - [x] Add deterministic smoke coverage for baseline acceptance, AVX, GFNI, EVEX and VMX classification.
-- [ ] Surface ISA preflight progress/result explicitly in Debug Console instead of only surfacing a terminal rejection.
-- [ ] Audit executable bytes of the materialized interpreter and recursive Global Dependencies as well as the main guest image.
-- [ ] Parse GNU symbol-version requirements and validate the selected Global Dependencies before launch (the large `ray_test` requires symbols up through `GLIBC_2.36`).
-- [ ] Add a compact real ELF regression fixture whose bytes contain unsupported VEX/EVEX instructions and assert browser execution is rejected before Blink starts.
+- [x] Surface ISA preflight progress/result explicitly in Debug Console, including executable-byte progress, decoded instruction count, detected ISA families, first evidence addresses and elapsed time.
+- [ ] Audit executable bytes of the materialized interpreter and recursive Global Dependencies as well as the main guest image; dependency AVX must be treated carefully because glibc IFUNC libraries can legitimately contain optional dispatched implementations.
+- [x] Parse GNU `DT_VERNEED` / `DT_VERDEF` symbol-version metadata directly from file-backed dynamic ELF data without depending on section headers.
+- [ ] Validate the selected Global Dependencies against those GNU symbol-version requirements before Blink launch (the large `ray_test` requires symbols through `GLIBC_2.36`).
+- [x] Add a compact real ELF regression fixture assembled and linked by the pinned NASM + GNU ld toolchain whose actual bytes contain VEX/AVX instructions, then prove Capstone classifies the entry instruction as unsupported.
+- [ ] Add a browser/controller E2E proving that an unsupported real ELF is rejected before `BlinkProcessSession.create()` starts.
 - [ ] VZed producer contract: build browser-inspector-compatible Linux artifacts with an explicit portable x86-64 baseline CPU target rather than host-native CPU features.
 - [ ] VZed producer contract: apply the same CPU target to generated module code, runtime/support objects and compiler-rt inputs so link-time code cannot reintroduce AVX/AVX2/GFNI.
 - [ ] VZed producer contract: add a post-link ISA audit that fails when an inspector-compatible artifact contains instructions outside the agreed Blink profile.
