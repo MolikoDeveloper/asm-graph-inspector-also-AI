@@ -119,6 +119,7 @@ export async function buildAssemblyProject(
       kind: 'assembly-build',
       backendId: backend.id,
       sourceFileIds: sourceFiles.map((file) => file.id),
+      sourceRevisions: sourceFiles.map((file) => ({ fileId: file.id, updatedAt: file.updatedAt, size: file.size })),
       artifactKind: assembly.artifact.kind,
       builtAt
     }
