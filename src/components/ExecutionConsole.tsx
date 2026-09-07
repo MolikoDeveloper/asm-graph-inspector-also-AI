@@ -1,8 +1,20 @@
-import { Pause, Play, RotateCcw, StepForward } from 'lucide-react';
+import { useEffect, useMemo, useRef, useState } from 'react';
+import { FastForward, Pause, Play, RotateCcw, Send, StepForward } from 'lucide-react';
 import type { ExecutionSnapshot, ExecutionSupport } from '../features/execution/model';
+import { submitActiveExecutionInput } from '../features/execution/activeInput';
+import { deriveAssemblyBuildTelemetry, type DebugLogEntryLike } from '../features/execution/debugTelemetry';
+import { renderVirtualTerminal } from '../features/execution/virtualTerminal';
+import './ExecutionConsole.css';
 
 function hex(value: bigint | null | undefined): string {
   return value === null || value === undefined ? '—' : `0x${value.toString(16).padStart(16, '0')}`;
+}
+
+function duration(ms: number | null): string {
+  if (ms === null || !Number.isFinite(ms)) return '—';
+  if (ms < 1) return `${ms.toFixed(2)} ms`;
+  if (ms < 1000) return `${ms.toFixed(1)} ms`;
+  return `${(ms / 1000).toFixed(3)} s`;
 }
 
 const REGISTER_ROWS = [
@@ -16,6 +28,7 @@ export function ExecutionConsole({
   snapshot,
   support,
   targetName,
+  buildEntries,
   onPrepare,
   onRun,
   onPause,
@@ -25,6 +38,7 @@ export function ExecutionConsole({
   snapshot: ExecutionSnapshot;
   support: ExecutionSupport | null;
   targetName: string | null;
+  buildEntries: readonly DebugLogEntryLike[];
   onPrepare(): void;
   onRun(): void;
   onPause(): void;
@@ -35,22 +49,199 @@ export function ExecutionConsole({
   const running = snapshot.status === 'running';
   const terminal = snapshot.status === 'exited' || snapshot.status === 'halted' || snapshot.status === 'trapped';
   const registers = snapshot.registers;
+  const [autoStepping, setAutoStepping] = useState(false);
+  const [autoDelay, setAutoDelay] = useState(50);
+  const [lastStepMs, setLastStepMs] = useState<number | null>(null);
+  const [runElapsedMs, setRunElapsedMs] = useState<number | null>(null);
+  const [clock, setClock] = useState(0);
+  const [cliInput, setCliInput] = useState('');
+  const [cliLines, setCliLines] = useState<string[]>([]);
+  const [stdoutOffset, setStdoutOffset] = useState(0);
+  const stepStartedAt = useRef<number | null>(null);
+  const stepInFlight = useRef(false);
+  const previousStepKey = useRef('');
+  const runRequested = useRef(false);
+  const runCommandStartedAt = useRef<number | null>(null);
+  const runStartedAt = useRef<number | null>(null);
+
+  const buildTelemetry = useMemo(() => deriveAssemblyBuildTelemetry(buildEntries, Date.now()), [buildEntries, clock]);
+  const renderedStdout = useMemo(() => {
+    const offset = Math.min(stdoutOffset, snapshot.stdout.length);
+    const raw = snapshot.stdout.slice(offset);
+    const terminalText = renderVirtualTerminal(raw, { columns: 96, rows: 32 });
+    return [terminalText, ...cliLines].filter(Boolean).join('\n');
+  }, [cliLines, snapshot.stdout, stdoutOffset]);
+
+  useEffect(() => {
+    if (buildTelemetry.status !== 'building' && !running && !autoStepping) return;
+    const timer = window.setInterval(() => setClock((value) => value + 1), 80);
+    return () => window.clearInterval(timer);
+  }, [autoStepping, buildTelemetry.status, running]);
+
+  useEffect(() => {
+    const key = `${snapshot.targetFileId ?? 'none'}:${snapshot.instructionCount}:${snapshot.status}`;
+    if (previousStepKey.current === key) return;
+    previousStepKey.current = key;
+    stepInFlight.current = false;
+    if (stepStartedAt.current !== null && snapshot.instructionCount > 0) {
+      setLastStepMs(Math.max(0, performance.now() - stepStartedAt.current));
+      stepStartedAt.current = null;
+    }
+  }, [snapshot.instructionCount, snapshot.status, snapshot.targetFileId]);
+
+  useEffect(() => {
+    if (runRequested.current && runStartedAt.current === null && snapshot.status === 'running') {
+      runStartedAt.current = performance.now();
+    }
+    if (!runRequested.current || !terminal) return;
+    const now = performance.now();
+    if (runStartedAt.current !== null) {
+      setRunElapsedMs(Math.max(0, now - runStartedAt.current));
+    } else if (runCommandStartedAt.current !== null) {
+      const buildMs = buildTelemetry.status === 'idle' || buildTelemetry.status === 'building' ? 0 : (buildTelemetry.elapsedMs ?? 0);
+      setRunElapsedMs(Math.max(0, now - runCommandStartedAt.current - buildMs));
+    }
+    runRequested.current = false;
+    runCommandStartedAt.current = null;
+    runStartedAt.current = null;
+  }, [buildTelemetry.elapsedMs, buildTelemetry.status, snapshot.status, terminal]);
+
+  useEffect(() => {
+    if (!autoStepping) return;
+    if (!supported || terminal || running) {
+      setAutoStepping(false);
+      stepInFlight.current = false;
+      return;
+    }
+    if (stepInFlight.current) return;
+    const timer = window.setTimeout(() => {
+      stepInFlight.current = true;
+      stepStartedAt.current = performance.now();
+      onStep();
+    }, autoDelay);
+    return () => window.clearTimeout(timer);
+  }, [autoDelay, autoStepping, onStep, running, snapshot.instructionCount, snapshot.status, snapshot.targetFileId, supported, terminal]);
+
+  useEffect(() => {
+    setAutoStepping(false);
+    stepInFlight.current = false;
+    setStdoutOffset(0);
+    setCliLines([]);
+  }, [snapshot.targetFileId]);
+
+  function performStep() {
+    if (stepInFlight.current) return;
+    setAutoStepping(false);
+    stepInFlight.current = true;
+    stepStartedAt.current = performance.now();
+    onStep();
+  }
+
+  function performRun() {
+    setAutoStepping(false);
+    stepInFlight.current = false;
+    runRequested.current = true;
+    runCommandStartedAt.current = performance.now();
+    runStartedAt.current = null;
+    setRunElapsedMs(null);
+    onRun();
+  }
+
+  function performPause() {
+    setAutoStepping(false);
+    stepInFlight.current = false;
+    if (runStartedAt.current !== null) {
+      setRunElapsedMs(Math.max(0, performance.now() - runStartedAt.current));
+      runRequested.current = false;
+      runStartedAt.current = null;
+      runCommandStartedAt.current = null;
+    }
+    onPause();
+  }
+
+  function performReset() {
+    setAutoStepping(false);
+    stepInFlight.current = false;
+    runRequested.current = false;
+    runStartedAt.current = null;
+    runCommandStartedAt.current = null;
+    setLastStepMs(null);
+    setRunElapsedMs(null);
+    onReset();
+  }
+
+  function addCliLine(text: string) {
+    setCliLines((lines) => [...lines.slice(-31), text]);
+  }
+
+  function sendGuestInput(text: string) {
+    const accepted = submitActiveExecutionInput(`${text}\n`);
+    if (!accepted) {
+      addCliLine('[inspector] no active stdin queue; Prepare/Run the program first.');
+      return;
+    }
+    addCliLine(`[stdin] ${text}`);
+    if (snapshot.status === 'paused' && snapshot.trapReason?.toLowerCase().includes('waiting for stdin')) {
+      queueMicrotask(performRun);
+    }
+  }
+
+  function executeCli(raw: string) {
+    const command = raw.trim();
+    if (!command) return;
+    if (!command.startsWith(':')) {
+      sendGuestInput(raw);
+      return;
+    }
+
+    const [verb, ...rest] = command.slice(1).split(/\s+/);
+    const argument = rest.join(' ');
+    switch (verb.toLowerCase()) {
+      case 'help':
+        addCliLine('[inspector] :run :step :auto :stop :pause :reset :status :clear :stdin <text> · plain text -> guest stdin');
+        break;
+      case 'run': performRun(); break;
+      case 'step': performStep(); break;
+      case 'auto': setAutoStepping(true); break;
+      case 'stop': setAutoStepping(false); stepInFlight.current = false; break;
+      case 'pause': performPause(); break;
+      case 'reset': performReset(); break;
+      case 'status':
+        addCliLine(`[inspector] ${snapshot.status} · ${snapshot.provider ?? 'no provider'} · ${snapshot.instructionCount.toLocaleString()} stepped instruction(s)`);
+        break;
+      case 'clear':
+        setStdoutOffset(snapshot.stdout.length);
+        setCliLines([]);
+        break;
+      case 'stdin': sendGuestInput(argument); break;
+      default: addCliLine(`[inspector] unknown command :${verb}; use :help`); break;
+    }
+  }
+
+  const liveRunElapsed = runStartedAt.current !== null && running ? performance.now() - runStartedAt.current : runElapsedMs;
+  const buildLabel = buildTelemetry.status === 'idle'
+    ? 'idle'
+    : `${buildTelemetry.status}${buildTelemetry.elapsedMs !== null ? ` · ${duration(buildTelemetry.elapsedMs)}` : ''}`;
 
   return (
     <div className="execution-console">
       <div className="execution-toolbar">
         <div className="execution-target">
           <strong>{targetName ?? 'No executable or ASM source selected'}</strong>
-          <span className={`execution-status ${snapshot.status}`}>{snapshot.status}</span>
+          <span className={`execution-status ${snapshot.status}`}>{autoStepping ? 'auto-step' : snapshot.status}</span>
           {support?.provider ? <code>{snapshot.provider ?? support.provider}</code> : null}
           {snapshot.instructionCount ? <code>{snapshot.instructionCount.toLocaleString()} stepped insn</code> : null}
         </div>
         <div className="execution-actions">
           <button type="button" disabled={!supported || running} onClick={onPrepare} title="Prepare/reset execution session"><RotateCcw size={13} /> Prepare</button>
-          <button type="button" disabled={!supported || running || terminal} onClick={onStep} title="Execute one machine instruction"><StepForward size={13} /> Step</button>
-          <button type="button" disabled={!supported || running || terminal} onClick={onRun} title="Run in bounded browser batches"><Play size={13} /> Run</button>
-          <button type="button" disabled={!running} onClick={onPause} title="Pause after the current execution batch"><Pause size={13} /> Pause</button>
-          <button type="button" disabled={!supported || running} onClick={onReset} title="Reload execution mappings and machine state"><RotateCcw size={13} /> Reset</button>
+          <button type="button" disabled={!supported || running || terminal || autoStepping} onClick={performStep} title="Execute one machine instruction"><StepForward size={13} /> Step</button>
+          <button type="button" className={autoStepping ? 'execution-auto-active' : ''} disabled={!supported || running || terminal} onClick={() => setAutoStepping((value) => !value)} title="Continuously Step while refreshing live disassembly and CFG"><FastForward size={13} /> {autoStepping ? 'Stop Auto' : 'Auto Step'}</button>
+          <select className="execution-auto-speed" aria-label="Auto Step interval" value={autoDelay} disabled={running} onChange={(event) => setAutoDelay(Number(event.target.value))}>
+            <option value={16}>16 ms</option><option value={50}>50 ms</option><option value={150}>150 ms</option><option value={500}>500 ms</option>
+          </select>
+          <button type="button" disabled={!supported || running || terminal || autoStepping} onClick={performRun} title="Run in bounded browser batches"><Play size={13} /> Run</button>
+          <button type="button" disabled={!running && !autoStepping} onClick={performPause} title="Pause Run or stop Auto Step"><Pause size={13} /> Pause</button>
+          <button type="button" disabled={!supported || running} onClick={performReset} title="Reload execution mappings and machine state"><RotateCcw size={13} /> Reset</button>
         </div>
       </div>
 
@@ -67,6 +258,11 @@ export function ExecutionConsole({
         <div className="execution-body">
           {support.notes.length ? <div className="execution-provider-notes">{support.notes.map((note) => <span key={note}>{note}</span>)}</div> : null}
           <section className="execution-state">
+            <div className="execution-metrics">
+              <span><b>ASM pipeline</b><code className={buildTelemetry.status}>{buildLabel}</code></span>
+              <span><b>Binary execution</b><code>{duration(liveRunElapsed)}</code></span>
+              <span><b>Last Step latency</b><code>{duration(lastStepMs)}</code></span>
+            </div>
             <div className="execution-current">
               <span><b>RIP</b><code>{hex(registers?.rip)}</code></span>
               <span><b>RSP</b><code>{hex(registers?.rsp)}</code></span>
@@ -88,8 +284,16 @@ export function ExecutionConsole({
             {snapshot.exitCode !== null ? <div className="execution-exit">Process exited with code <code>{snapshot.exitCode}</code>.</div> : null}
           </section>
 
-          <section className="execution-io">
-            <div className="execution-stream"><header>stdout</header><pre>{snapshot.stdout || ' '}</pre></div>
+          <section className="execution-io virtualized">
+            <div className="virtual-terminal">
+              <header><span>Virtual TTY / stdout</span><span>plain text = stdin · :help = inspector CLI</span></header>
+              <pre>{renderedStdout || ' '}</pre>
+              <form className="virtual-cli-form" onSubmit={(event) => { event.preventDefault(); const value = cliInput; setCliInput(''); executeCli(value); }}>
+                <code>$</code>
+                <input value={cliInput} onChange={(event) => setCliInput(event.target.value)} placeholder="stdin text or :help" spellCheck={false} />
+                <button type="submit" title="Send to virtual CLI"><Send size={12} /> Send</button>
+              </form>
+            </div>
             <div className="execution-stream stderr"><header>stderr</header><pre>{snapshot.stderr || ' '}</pre></div>
           </section>
         </div>
