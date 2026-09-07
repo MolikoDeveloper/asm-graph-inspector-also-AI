@@ -17,7 +17,8 @@ import {
 } from './runtimeIsaAudit';
 import { describeRuntimeSymbolVersionFailure } from './runtimeSymbolVersions';
 import { prepareLinuxRuntimeEnvironment } from './linuxRuntimeEnvironment';
-import { executionSupport, X86ExecutionSession } from './session';
+import { binaryExecutionSupport } from './executionRouting';
+import { X86ExecutionSession } from './session';
 import { UnicornMachineSession } from './unicornMachineSession';
 import { UnicornLinuxProcessSession } from './unicornLinuxProcessSession';
 import { registerActiveExecutionInputSink } from './activeInput';
@@ -53,20 +54,7 @@ const IDLE_SNAPSHOT: ExecutionSnapshot = {
 
 export function executionSupportForTarget(target: ExecutionTarget): ExecutionSupport {
   if (target.kind !== 'binary') return asmSourceExecutionSupport(target.file, target.source);
-  const support = executionSupport(target.image);
-  if (!support.supported) return support;
-  const dynamic = target.image.kind === 'pie-executable' || !!target.image.interpreter || target.image.neededLibraries.length > 0;
-  return {
-    ...support,
-    provider: dynamic ? 'unicorn-linux' : 'unicorn-machine',
-    notes: dynamic
-      ? [
-          'Linux ELF will use the kernel-less Unicorn/WASM process backend.',
-          ...(target.image.interpreter ? [`PT_INTERP ${target.image.interpreter} will execute from the selected Global Dependency bytes.`] : []),
-          ...(target.image.neededLibraries.length ? [`${target.image.neededLibraries.length} direct DT_NEEDED entr${target.image.neededLibraries.length === 1 ? 'y' : 'ies'} will be resolved recursively from Global Dependencies.`] : [])
-        ]
-      : ['Static fixed-address ELF will use the Unicorn/WASM x86-64 machine backend.']
-  };
+  return binaryExecutionSupport(target.image);
 }
 
 function failedSnapshot(target: ExecutionTarget, reason: string): ExecutionSnapshot {
@@ -147,8 +135,8 @@ export function useExecutionController() {
       } else if (support.provider === 'unicorn-machine') {
         session = await UnicornMachineSession.create(target.file, target.image, DEFAULT_EXECUTION_POLICY);
       } else {
-        // Deliberate legacy/reference fallback. Browser routing above selects a
-        // Unicorn provider for every supported binary target.
+        // Deliberate legacy/reference fallback. Normal browser binary routing is
+        // entirely Unicorn-backed; bounded execution remains regression-only.
         session = new X86ExecutionSession(target.file, target.image, await loadCapstone(), DEFAULT_EXECUTION_POLICY);
       }
 
