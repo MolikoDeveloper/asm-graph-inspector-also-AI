@@ -24,7 +24,8 @@ const valid = {
   build: {
     disableJit: true,
     nonPosixLinuxApis: true,
-    headlessSignalRegisters: true
+    headlessSignalRegisters: true,
+    headlessSignalCodeBytes: true
   }
 };
 
@@ -43,8 +44,14 @@ const rejectedCrashCapture = validateBlinkBuildProfile(staleCrashCapture);
 assert(!rejectedCrashCapture.ok, 'Blink build without headless signal registers must be rejected');
 assert(rejectedCrashCapture.reason?.includes('fresh register state'), `unexpected headless-state rejection reason: ${rejectedCrashCapture.reason}`);
 
+const staleCodeCapture = structuredClone(valid);
+staleCodeCapture.build.headlessSignalCodeBytes = false;
+const rejectedCodeCapture = validateBlinkBuildProfile(staleCodeCapture);
+assert(!rejectedCodeCapture.ok, 'Blink build without observed fault code bytes must be rejected');
+assert(rejectedCodeCapture.reason?.includes('guest code bytes'), `unexpected headless-code rejection reason: ${rejectedCodeCapture.reason}`);
+
 const wrongCommit = structuredClone(valid);
 wrongCommit.blinkCommit = 'old-prebuilt';
 assert(!validateBlinkBuildProfile(wrongCommit).ok, 'stale Blink commit must be rejected');
 
-console.log('blink build profile smoke: PASS (x86-64-baseline + pinned source + headless signal registers)');
+console.log('blink build profile smoke: PASS (x86-64-baseline + pinned source + headless signal registers/code bytes)');
