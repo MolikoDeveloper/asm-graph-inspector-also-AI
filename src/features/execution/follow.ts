@@ -79,6 +79,10 @@ export function projectExecutionTrace(graph: AnalysisGraph | null, snapshot: Exe
 
   let previousNodeId: string | null = null;
   for (const event of snapshot.events) {
+    if (event.kind === 'trace-gap') {
+      previousNodeId = null;
+      continue;
+    }
     if (event.kind !== 'instruction') continue;
     const nodeId = eventNodeId(graph, event);
     if (!nodeId) { previousNodeId = null; continue; }
