@@ -1,0 +1,51 @@
+diff --git a/blink/blinkenlib.c b/blink/blinkenlib.c
+--- a/blink/blinkenlib.c
++++ b/blink/blinkenlib.c
+@@ -134,7 +134,42 @@ u64 updateDisassembler() {
+ }
+ 
+ void update_clstruct(struct Machine *m) {
+-  if (!debugger_enabled) return;
++  /*
++   * Keep architectural register pointers current even when run_fast() keeps
++   * Blink's debugger/disassembler disabled. TerminateSignal() and the bounded
++   * preemption path call update_clstruct() before returning control to JS, so
++   * this gives the browser an exact RIP/register snapshot for fatal signals
++   * without enabling the fragile/heavy internal disassembler during Run.
++   */
++  cls.flags = (u32)&m->flags;
++  cls.cs__base = (u32)&m->cs.base;
++  cls.rip = (u32)&m->ip;
++  cls.rsp = (u32)&m->sp;
++  cls.rbp = (u32)&m->bp;
++  cls.rsi = (u32)&m->si;
++  cls.rdi = (u32)&m->di;
++  cls.r8 = (u32)&m->r8;
++  cls.r9 = (u32)&m->r9;
++  cls.r10 = (u32)&m->r10;
++  cls.r11 = (u32)&m->r11;
++  cls.r12 = (u32)&m->r12;
++  cls.r13 = (u32)&m->r13;
++  cls.r14 = (u32)&m->r14;
++  cls.r15 = (u32)&m->r15;
++  cls.rax = (u32)&m->ax;
++  cls.rbx = (u32)&m->bx;
++  cls.rcx = (u32)&m->cx;
++  cls.rdx = (u32)&m->dx;
++
++  if (!debugger_enabled) {
++    cls.codemem = 0;
++    cls.stackmem = 0;
++    cls.readaddr = 0;
++    cls.readsize = 0;
++    cls.writeaddr = 0;
++    cls.writesize = 0;
++    cls.dis__max_lines = 0;
++    cls.dis__max_line_len = 0;
++    cls.dis__current_line = 0;
++    cls.dis__buffer = 0;
++    return;
++  }
+   // memory regions
+   u64 pc = GetPc(m);
+   u64 sp = Read64(m->sp);
