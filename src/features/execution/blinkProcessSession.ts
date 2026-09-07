@@ -1,8 +1,9 @@
-import type { CanonicalInstruction, LoadedImage } from '../binary/model';
+import type { LoadedImage } from '../binary/model';
 import type { ProjectFile } from '../project/model';
 import {
   DEFAULT_EXECUTION_POLICY,
   type ExecutionEvent,
+  type ExecutionInstructionSnapshot,
   type ExecutionPolicy,
   type ExecutionRegisterSnapshot,
   type ExecutionRuntimeDisassemblySnapshot,
@@ -13,6 +14,7 @@ import {
 import { materializeRuntimeDependencyClosure, type MaterializedRuntimeModule, type RuntimeDependencyClosure } from './runtimeDependencies';
 import { describeExecutionError, ExecutionProviderDiagnosticBuffer } from './providerDiagnostics';
 import { validateBlinkBuildProfile } from './blinkBuildProfile';
+import { blinkRuntimeInstructionLine } from './runtimeDisassembly';
 import {
   RuntimeImageResolver,
   runtimeImageCandidateFromElfBytes,
@@ -175,7 +177,7 @@ function moduleRole(module: MaterializedRuntimeModule, interpreterPath: string |
 export class BlinkProcessSession {
   private statusValue: ExecutionStatus = 'ready';
   private instructionCountValue = 0;
-  private lastInstructionValue: CanonicalInstruction | null = null;
+  private lastInstructionValue: ExecutionInstructionSnapshot | null = null;
   private stdoutValue = '';
   private stderrValue = '';
   private exitCodeValue: number | null = null;
@@ -464,6 +466,45 @@ export class BlinkProcessSession {
     };
   }
 
+  private recordSteppedProgramInstruction(): void {
+    if (!this.runtimeImageResolver) return;
+    try {
+      const registers = this.readRegisters();
+      const runtime = this.readRuntimeDisassembly(registers?.rip);
+      if (!runtime) return;
+      const executed = blinkRuntimeInstructionLine(runtime.lines[runtime.currentLine] ?? '', runtime.currentLine);
+      if (!executed) return;
+      const match = this.runtimeImageResolver.resolve(runtime.lines, executed.address, runtime.currentLine);
+      if (!match || match.role !== 'program') {
+        this.lastInstructionValue = null;
+        return;
+      }
+      const address = Number(match.imageAddress);
+      const endAddress = Number(match.imageAddress + BigInt(executed.bytes.length));
+      if (!Number.isSafeInteger(address) || !Number.isSafeInteger(endAddress)) {
+        this.providerDiagnostics.add('warning', `Program instruction address ${match.imageAddress.toString(16)} exceeds browser-safe analysis range.`);
+        this.lastInstructionValue = null;
+        return;
+      }
+      const instruction: ExecutionInstructionSnapshot = {
+        address,
+        endAddress,
+        mnemonic: executed.mnemonic,
+        operands: executed.operands
+      };
+      this.lastInstructionValue = instruction;
+      appendEvent(this.eventsValue, {
+        kind: 'instruction',
+        address,
+        mnemonic: executed.mnemonic,
+        operands: executed.operands
+      });
+    } catch (error: unknown) {
+      this.providerDiagnostics.add('warning', `Blink stepped-instruction projection unavailable: ${describeExecutionError(error)}`);
+      this.lastInstructionValue = null;
+    }
+  }
+
   get status(): ExecutionStatus { return this.statusValue; }
 
   markRunning(): void {
@@ -501,6 +542,7 @@ export class BlinkProcessSession {
       }
       this.module._blinkenlib_stepi();
       this.instructionCountValue += 1;
+      this.recordSteppedProgramInstruction();
       if (this.statusValue === 'running') this.statusValue = 'paused';
     } catch (error: unknown) {
       this.trapFromError(error);
