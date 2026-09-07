@@ -4,7 +4,10 @@ import { execFileSync } from 'node:child_process';
 import { existsSync, mkdtempSync, readFileSync, rmSync, writeFileSync } from 'node:fs';
 import { tmpdir } from 'node:os';
 import { join, resolve } from 'node:path';
-import { parseElfImage, inspectElfRuntimeLinkage } from '../../src/features/binary/elfParser';
+import { executableBytesForRange, parseElfImage, inspectElfRuntimeLinkage } from '../../src/features/binary/elfParser';
+import { createX86_64InstructionDecoder } from '../../src/features/capstone/capstoneDecoder';
+import type { LoadedImage } from '../../src/features/binary/model';
+import type { CapstoneModule } from '../../src/features/capstone/types';
 import type { ProjectFile } from '../../src/features/project/model';
 import { prepareLinuxRuntimeEnvironment } from '../../src/features/execution/linuxRuntimeEnvironment';
 import type { MaterializedRuntimeModule, RuntimeDependencyClosure } from '../../src/features/execution/runtimeDependencies';
@@ -38,7 +41,31 @@ function materialized(requestedName: string, path: string): MaterializedRuntimeM
   };
 }
 
-function failureContext(snapshot: ExecutionSnapshot): string {
+function decodeRuntimeRip(snapshot: ExecutionSnapshot, loaderImage: LoadedImage, loaderBytes: ArrayBuffer, capstone: CapstoneModule): string {
+  const rip = snapshot.registers?.rip;
+  const runtimeImage = snapshot.runtimeDisassembly?.image;
+  if (rip === null || rip === undefined || !runtimeImage || runtimeImage.role !== 'interpreter') return 'fault=<unresolved>';
+  const imageAddressBig = rip - runtimeImage.loadBias;
+  const imageAddress = Number(imageAddressBig);
+  if (!Number.isSafeInteger(imageAddress)) return `fault=runtime:0x${rip.toString(16)} image=<unsafe>`;
+  try {
+    const decoder = createX86_64InstructionDecoder(capstone);
+    try {
+      const bytes = executableBytesForRange(loaderImage, loaderBytes, imageAddress, 15);
+      const instruction = decoder.decodeOne(bytes, imageAddress);
+      const hex = [...bytes.subarray(0, Math.min(bytes.length, instruction?.size ?? bytes.length))].map((byte) => byte.toString(16).padStart(2, '0')).join(' ');
+      return instruction
+        ? `fault=0x${imageAddress.toString(16)} ${instruction.mnemonic}${instruction.operands ? ` ${instruction.operands}` : ''} [${hex}]`
+        : `fault=0x${imageAddress.toString(16)} <Capstone undecoded> [${hex}]`;
+    } finally {
+      decoder.close();
+    }
+  } catch (error) {
+    return `fault=0x${imageAddress.toString(16)} decode-error=${error instanceof Error ? error.message : String(error)}`;
+  }
+}
+
+function failureContext(snapshot: ExecutionSnapshot, fault: string): string {
   const instruction = snapshot.lastInstruction
     ? `last=0x${snapshot.lastInstruction.address.toString(16)} ${snapshot.lastInstruction.mnemonic}${snapshot.lastInstruction.operands ? ` ${snapshot.lastInstruction.operands}` : ''}`
     : 'last=<none>';
@@ -51,7 +78,7 @@ function failureContext(snapshot: ExecutionSnapshot): string {
     .map((event) => event.kind === 'syscall' ? `${event.name}(${event.detail})` : '')
     .join(' <- ');
   const diagnostics = snapshot.providerDiagnostics.slice(-3).map((entry) => entry.message).join(' | ');
-  return [snapshot.trapReason ?? 'dynamic Unicorn session did not exit', instruction, runtime, `instructions=${snapshot.instructionCount}`, `recent-syscalls=${syscalls || '<none>'}`, `provider=${diagnostics || '<none>'}`].join(' ; ');
+  return [snapshot.trapReason ?? 'dynamic Unicorn session did not exit', instruction, fault, runtime, `instructions=${snapshot.instructionCount}`, `recent-syscalls=${syscalls || '<none>'}`, `provider=${diagnostics || '<none>'}`].join(' ; ');
 }
 
 const temp = mkdtempSync(join(tmpdir(), 'asm-graph-unicorn-linux-'));
@@ -87,6 +114,7 @@ try {
   ]);
   const loaderName = image.interpreter!.split('/').at(-1)!;
   const modules = [materialized(loaderName, loaderPath), materialized('libc.so.6', libcPath)];
+  const loaderImage = parseElfImage('dynamic-loader-fixture', loaderName, modules[0].bytes);
   const closure: RuntimeDependencyClosure = {
     interpreterPath: image.interpreter,
     modules,
@@ -117,7 +145,8 @@ try {
       snapshot = session.runSlice(500);
       if (snapshot.status === 'exited' || snapshot.status === 'trapped' || snapshot.status === 'halted') break;
     }
-    assert.equal(snapshot.status, 'exited', failureContext(snapshot));
+    const fault = decodeRuntimeRip(snapshot, loaderImage, modules[0].bytes, capstone);
+    assert.equal(snapshot.status, 'exited', failureContext(snapshot, fault));
     assert.equal(snapshot.exitCode, 0);
     assert.match(snapshot.stdout, /hello from unicorn dynamic glibc/);
     assert.ok(snapshot.events.some((event) => event.kind === 'trace-gap'), 'dynamic startup must cross loader/dependency execution boundaries');
