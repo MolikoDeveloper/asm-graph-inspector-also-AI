@@ -2,7 +2,7 @@ import type { LoadedImage } from '../binary/model';
 import type { ProjectFile } from '../project/model';
 
 export type ExecutionStatus = 'idle' | 'ready' | 'running' | 'paused' | 'exited' | 'halted' | 'trapped';
-export type ExecutionProviderKind = 'bounded-x86-64' | 'asm-source-x86-64' | 'blink-process';
+export type ExecutionProviderKind = 'bounded-x86-64' | 'unicorn-machine' | 'asm-source-x86-64' | 'blink-process';
 export type ExecutionSyscallPolicy = 'none' | 'stdio-exit';
 
 export interface ExecutionPolicy {
