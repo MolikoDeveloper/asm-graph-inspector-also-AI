@@ -4,6 +4,7 @@ export interface GeneratedProjectFileSourceRevision {
   fileId: string;
   updatedAt: number;
   size: number;
+  sha256: string;
 }
 
 export interface GeneratedProjectFileInfo {
