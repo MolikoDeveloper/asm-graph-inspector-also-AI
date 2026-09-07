@@ -8,13 +8,13 @@ export function executionAddressFromSnapshot(snapshot: ExecutionSnapshot): numbe
   // Process backends execute code from several loaded images. Only a RIP proven
   // to belong to the program may be projected into its static Capstone model.
   // Known Unicorn load bias is authoritative; Blink uses its observed resolver.
+  // Missing runtime-image evidence must fail closed rather than falling back to
+  // a stale lastInstruction/register value from another loaded image.
   if (snapshot.provider === 'blink-process' || snapshot.provider === 'unicorn-linux') {
     const runtimeImage = snapshot.runtimeDisassembly?.image;
-    if (runtimeImage) {
-      if (runtimeImage.role !== 'program') return null;
-      const imageAddress = Number(runtimeImage.imageAddress);
-      return Number.isSafeInteger(imageAddress) ? imageAddress : null;
-    }
+    if (!runtimeImage || runtimeImage.role !== 'program') return null;
+    const imageAddress = Number(runtimeImage.imageAddress);
+    return Number.isSafeInteger(imageAddress) ? imageAddress : null;
   }
 
   if (snapshot.lastInstruction?.address !== undefined) return snapshot.lastInstruction.address;
