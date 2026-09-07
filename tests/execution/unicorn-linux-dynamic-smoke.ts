@@ -41,13 +41,18 @@ function materialized(requestedName: string, path: string): MaterializedRuntimeM
   };
 }
 
-function decodeRuntimeRip(snapshot: ExecutionSnapshot, loaderImage: LoadedImage, loaderBytes: ArrayBuffer, capstone: CapstoneModule): string {
+function runtimeLoaderImageAddress(snapshot: ExecutionSnapshot): number | null {
   const rip = snapshot.registers?.rip;
   const runtimeImage = snapshot.runtimeDisassembly?.image;
-  if (rip === null || rip === undefined || !runtimeImage || runtimeImage.role !== 'interpreter') return 'fault=<unresolved>';
-  const imageAddressBig = rip - runtimeImage.loadBias;
-  const imageAddress = Number(imageAddressBig);
-  if (!Number.isSafeInteger(imageAddress)) return `fault=runtime:0x${rip.toString(16)} image=<unsafe>`;
+  if (rip === null || rip === undefined || !runtimeImage || runtimeImage.role !== 'interpreter') return null;
+  const imageAddress = Number(rip - runtimeImage.loadBias);
+  return Number.isSafeInteger(imageAddress) && imageAddress >= 0 ? imageAddress : null;
+}
+
+function decodeRuntimeRip(snapshot: ExecutionSnapshot, loaderImage: LoadedImage, loaderBytes: ArrayBuffer, capstone: CapstoneModule): string {
+  const rip = snapshot.registers?.rip;
+  const imageAddress = runtimeLoaderImageAddress(snapshot);
+  if (rip === null || rip === undefined || imageAddress === null) return 'fault=<unresolved>';
   try {
     const decoder = createX86_64InstructionDecoder(capstone);
     try {
@@ -65,7 +70,37 @@ function decodeRuntimeRip(snapshot: ExecutionSnapshot, loaderImage: LoadedImage,
   }
 }
 
-function failureContext(snapshot: ExecutionSnapshot, fault: string): string {
+function loaderCodeWindow(snapshot: ExecutionSnapshot, loaderPath: string): string {
+  const imageAddress = runtimeLoaderImageAddress(snapshot);
+  if (imageAddress === null) return 'loader-window=<unresolved>';
+  const start = Math.max(0, imageAddress - 0x30);
+  const stop = imageAddress + 0x100;
+  try {
+    const text = execFileSync('objdump', [
+      '-d',
+      '--no-show-raw-insn',
+      `--start-address=0x${start.toString(16)}`,
+      `--stop-address=0x${stop.toString(16)}`,
+      loaderPath
+    ], { encoding: 'utf8' });
+    return `loader-window=\n${text.trim()}`;
+  } catch (cause) {
+    return `loader-window=<objdump-error ${cause instanceof Error ? cause.message : String(cause)}>`;
+  }
+}
+
+function loaderSymbolContext(snapshot: ExecutionSnapshot, loaderPath: string): string {
+  const imageAddress = runtimeLoaderImageAddress(snapshot);
+  if (imageAddress === null) return 'loader-symbol=<unresolved>';
+  try {
+    const text = execFileSync('addr2line', ['-f', '-C', '-e', loaderPath, `0x${imageAddress.toString(16)}`], { encoding: 'utf8' }).trim();
+    return `loader-symbol=${text.replace(/\n/g, ' / ')}`;
+  } catch (cause) {
+    return `loader-symbol=<addr2line-error ${cause instanceof Error ? cause.message : String(cause)}>`;
+  }
+}
+
+function failureContext(snapshot: ExecutionSnapshot, fault: string, loaderPath: string): string {
   const instruction = snapshot.lastInstruction
     ? `last=0x${snapshot.lastInstruction.address.toString(16)} ${snapshot.lastInstruction.mnemonic}${snapshot.lastInstruction.operands ? ` ${snapshot.lastInstruction.operands}` : ''}`
     : 'last=<none>';
@@ -86,7 +121,19 @@ function failureContext(snapshot: ExecutionSnapshot, fault: string): string {
     .map((event) => event.kind === 'syscall' ? `${event.name}(${event.detail})` : '')
     .join(' <- ');
   const diagnostics = snapshot.providerDiagnostics.slice(-3).map((entry) => entry.message).join(' | ');
-  return [snapshot.trapReason ?? 'dynamic Unicorn session did not exit', instruction, fault, runtime, registers, `instructions=${snapshot.instructionCount}`, `recent-instructions=${recentInstructions || '<none>'}`, `recent-syscalls=${syscalls || '<none>'}`, `provider=${diagnostics || '<none>'}`].join(' ; ');
+  return [
+    snapshot.trapReason ?? 'dynamic Unicorn session did not exit',
+    instruction,
+    fault,
+    runtime,
+    registers,
+    `instructions=${snapshot.instructionCount}`,
+    `recent-instructions=${recentInstructions || '<none>'}`,
+    `recent-syscalls=${syscalls || '<none>'}`,
+    `provider=${diagnostics || '<none>'}`,
+    loaderSymbolContext(snapshot, loaderPath),
+    loaderCodeWindow(snapshot, loaderPath)
+  ].join(' ; ');
 }
 
 const temp = mkdtempSync(join(tmpdir(), 'asm-graph-unicorn-linux-'));
@@ -154,7 +201,7 @@ try {
       if (snapshot.status === 'exited' || snapshot.status === 'trapped' || snapshot.status === 'halted') break;
     }
     const fault = decodeRuntimeRip(snapshot, loaderImage, modules[0].bytes, capstone);
-    assert.equal(snapshot.status, 'exited', failureContext(snapshot, fault));
+    assert.equal(snapshot.status, 'exited', failureContext(snapshot, fault, loaderPath));
     assert.equal(snapshot.exitCode, 0);
     assert.match(snapshot.stdout, /hello from unicorn dynamic glibc/);
     assert.ok(snapshot.events.some((event) => event.kind === 'trace-gap'), 'dynamic startup must cross loader/dependency execution boundaries');
