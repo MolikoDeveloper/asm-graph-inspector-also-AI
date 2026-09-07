@@ -79,10 +79,12 @@ Generated build files carry explicit `assembly-build` provenance (backend, sourc
 
 ## Checkpoint 5 — execution unification
 
-- [ ] Route normal ASM Run/Step through `source -> assembler -> ELF -> execution`.
-- [ ] Use real ELF addresses for RIP, instruction counts and execution traces.
-- [ ] Keep the legacy source-semantic provider available only as a deliberate fallback/test mode during migration.
-- [ ] Remove legacy-provider default routing only after binary-path parity tests pass.
+- [x] Route normal ASM Run/Step through `source -> assembler -> ELF -> execution`.
+- [x] Use real ELF addresses for RIP, instruction counts and execution traces.
+- [x] Keep the legacy source-semantic provider available only as a deliberate fallback/test mode during migration.
+- [x] Remove legacy-provider default routing only after binary-path parity tests pass.
+
+Normal UI execution no longer constructs an `asm-source` execution target. F6/F10/Prepare on an ASM source resolves a generated ELF using the pinned NASM + GNU ld backend, analyzes it through the normal binary/Capstone path, and executes that binary. Generated execution artifacts carry SHA-256 source fingerprints so unchanged source reuses the existing ELF while any source-content change forces a rebuild. The legacy `AsmSourceExecutionSession` remains available to explicit headless/tests/fallback callers only. A parity smoke fixture restricted to the shared legacy/NASM subset asserts identical stdout/exit behavior while the compiled path is additionally required to use the binary provider and real linked ELF addresses.
 
 ## Checkpoint 6 — CFG and runtime-follow unification
 
