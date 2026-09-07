@@ -147,13 +147,24 @@ function runtimeFor(module: FakeBlinkModule): BlinkProcessRuntime {
   };
 }
 
-const bytes = Uint8Array.from([0x7f, 0x45, 0x4c, 0x46]).buffer;
+const programBytes = new Uint8Array(256);
+programBytes.fill(0x90);
+programBytes.set([0x48, 0x31, 0xed], 0x20);
+programBytes.set([0x49, 0x89, 0xd1], 0x24);
+programBytes.set([0x5e], 0x28);
+const bytes = programBytes.buffer;
 const file: ProjectFile = {
   id: 'blink-smoke', path: 'blink-smoke', name: 'blink-smoke', kind: 'binary', language: 'binary', bytes, size: bytes.byteLength, updatedAt: 1
 };
 const image = {
   schema: 'asm-graph.loaded-image/v1', sourceFileId: file.id, sourcePath: file.path, architecture: 'x86-64', byteOrder: 'little', kind: 'executable', entry: Number(ENTRY), buildId: null, soname: null,
-  neededLibraries: ['libc.so.6'], interpreter: '/lib64/ld-linux-x86-64.so.2', segments: [], sections: [], symbols: [], relocations: [], functions: [],
+  neededLibraries: ['libc.so.6'], interpreter: '/lib64/ld-linux-x86-64.so.2',
+  segments: [{
+    index: 0, type: 1, flags: 5, offset: 0, virtualAddress: Number(ENTRY) - 0x20,
+    fileSize: bytes.byteLength, memorySize: bytes.byteLength, alignment: 0x1000,
+    readable: true, writable: false, executable: true
+  }],
+  sections: [], symbols: [], relocations: [], functions: [],
   unwind: { available: false, cies: [], fdes: [], errors: [], cfiDiagnostics: [], cfiRowCount: 0 }
 } as LoadedImage;
 
@@ -168,6 +179,12 @@ try {
   assertEqual(stepped.runtimeDisassembly?.source, 'blink-debugger', 'Blink live disassembly source');
   assertEqual(stepped.runtimeDisassembly?.currentLine, 0, 'Blink provider last-executed cursor');
   assertEqual(stepped.runtimeDisassembly?.lines.length, 3, 'Blink live disassembly line count');
+  assertEqual(stepped.runtimeDisassembly?.image?.name, 'blink-smoke', 'Blink next-RIP image name');
+  assertEqual(stepped.runtimeDisassembly?.image?.role, 'program', 'Blink next-RIP image role');
+  assertEqual(stepped.runtimeDisassembly?.image?.imageAddress, ENTRY + 4n, 'Blink next-RIP image address');
+  assertEqual(stepped.runtimeDisassembly?.image?.loadBias, 0n, 'Blink ET_EXEC load bias');
+  assertEqual(stepped.lastInstruction?.address, Number(ENTRY), 'Blink executed instruction projects to canonical program address');
+  assertEqual(stepped.events.filter((event) => event.kind === 'instruction').length, 1, 'Blink program instruction event count');
   assertEqual(
     blinkDisassemblyLineText(stepped.runtimeDisassembly?.lines[1] ?? ''),
     '0000000000406824\t49 89 d1\tmov r9, rdx',
@@ -198,4 +215,4 @@ try {
   runSession.dispose();
 }
 
-console.log('blink process state smoke: PASS (Prepare/Step + Reset-boundary + headless Run/exit)');
+console.log('blink process state smoke: PASS (Prepare/Step image identity + executed-program trace + Reset-boundary + headless Run/exit)');
