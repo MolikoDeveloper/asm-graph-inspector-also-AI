@@ -56,6 +56,9 @@ jobs:
       - name: Import classification tests
         run: bun run test:import
 
+      - name: Binary analysis tests
+        run: bun run test:analysis
+
       - name: Execution tests
         run: bun run test:execution
 
