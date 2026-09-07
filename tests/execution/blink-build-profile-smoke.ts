@@ -23,7 +23,8 @@ const valid = {
   },
   build: {
     disableJit: true,
-    nonPosixLinuxApis: true
+    nonPosixLinuxApis: true,
+    headlessSignalRegisters: true
   }
 };
 
@@ -36,8 +37,14 @@ const rejected = validateBlinkBuildProfile(oldUpstreamStyle);
 assert(!rejected.ok, 'x87-disabled Blink profile must be rejected');
 assert(rejected.reason?.includes('x87=false'), `unexpected rejection reason: ${rejected.reason}`);
 
+const staleCrashCapture = structuredClone(valid);
+staleCrashCapture.build.headlessSignalRegisters = false;
+const rejectedCrashCapture = validateBlinkBuildProfile(staleCrashCapture);
+assert(!rejectedCrashCapture.ok, 'Blink build without headless signal registers must be rejected');
+assert(rejectedCrashCapture.reason?.includes('fresh register state'), `unexpected headless-state rejection reason: ${rejectedCrashCapture.reason}`);
+
 const wrongCommit = structuredClone(valid);
 wrongCommit.blinkCommit = 'old-prebuilt';
 assert(!validateBlinkBuildProfile(wrongCommit).ok, 'stale Blink commit must be rejected');
 
-console.log('blink build profile smoke: PASS (x86-64-baseline + x87/MMX + pinned source)');
+console.log('blink build profile smoke: PASS (x86-64-baseline + pinned source + headless signal registers)');
