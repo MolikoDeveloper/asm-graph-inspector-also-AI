@@ -93,12 +93,12 @@ export function SettingsDialog({ settings, globalDependencies, onChange, onClose
           {tab === 'dependencies' ? <GlobalDependenciesSettings controller={globalDependencies} /> : null}
           {tab === 'runtime' ? (
             <>
-              <div className="settings-section-heading"><h2>Runtime</h2><p>Execution routing is artifact-derived. The inspector does not ask which compiler produced a binary: it selects a backend from the ELF shape and the runtime services that artifact actually needs.</p></div>
+              <div className="settings-section-heading"><h2>Runtime</h2><p>Execution routing is artifact-derived. Compiler, assembler and source language are irrelevant once an ELF reaches the runtime pipeline.</p></div>
 
               <h3>Execution routing</h3>
               <div className="runtime-routing-grid">
-                <article className="runtime-route-card"><header><Gauge size={15} /><strong>Static x86-64 ET_EXEC</strong><RuntimeBadge state="ready">Unicorn</RuntimeBadge></header><p>Fixed-address ELF without <code>PT_INTERP</code>/<code>DT_NEEDED</code> executes on Unicorn/WASM. Step snapshots are decoded by Capstone and projected back onto Disassembly + CFG.</p></article>
-                <article className="runtime-route-card"><header><Boxes size={15} /><strong>Dynamic Linux ELF</strong><RuntimeBadge state="ready">Blink</RuntimeBadge></header><p>PIE, <code>PT_INTERP</code> or <code>DT_NEEDED</code> still use Blink while the Unicorn Linux-userspace layer grows. Loader and recursive shared libraries come from Global Dependencies.</p></article>
+                <article className="runtime-route-card"><header><Gauge size={15} /><strong>Static x86-64 ET_EXEC</strong><RuntimeBadge state="ready">Unicorn machine</RuntimeBadge></header><p>Fixed-address ELF without a dynamic loader executes directly on Unicorn/WASM. Capstone remains the canonical decoder for Step, Disassembly and CFG projection.</p></article>
+                <article className="runtime-route-card"><header><Boxes size={15} /><strong>Dynamic Linux ELF</strong><RuntimeBadge state="ready">Unicorn Linux</RuntimeBadge></header><p><code>PT_INTERP</code>, PIE and recursive <code>DT_NEEDED</code> execution use the kernel-less Unicorn Linux process backend. Exact loader/shared-library bytes come from Global Dependencies.</p></article>
               </div>
 
               <h3>Engines</h3>
@@ -113,7 +113,7 @@ export function SettingsDialog({ settings, globalDependencies, onChange, onClose
 
                 <article className="runtime-engine-card">
                   <header><Cpu size={15} /><strong>Unicorn x86/WASM</strong><RuntimeBadge state={unicornError ? 'error' : unicornLoaded ? 'ready' : 'lazy'}>{unicornError ? 'error' : unicornLoaded ? 'loaded' : 'lazy'}</RuntimeBadge></header>
-                  <p>CPU + memory execution backend for static ELF. ISA capabilities below are measured by executing real instruction bytes inside this exact vendored runtime rather than inferred from metadata.</p>
+                  <p>Primary CPU/memory engine for static and dynamic Linux ELF. ISA capabilities are measured by executing real instruction bytes inside this exact vendored runtime.</p>
                   <div className="runtime-asset-list"><div><span>Runtime</span><code>vendor/unicorn/unicorn_x86.js</code></div><div><span>Build</span><code>@alexaltea/unicorn-js 2.1.4 · x86-only SINGLE_FILE</code></div></div>
                   <div className="runtime-engine-actions"><button disabled={unicornBusy} onClick={() => void probeUnicornRuntime()}>{unicornBusy ? <><LoaderCircle size={11} /> Probing…</> : unicornReport ? 'Re-run capability probes' : 'Load & probe ISA'}</button>{unicornReport ? <RuntimeBadge state="ready">v{unicornReport.version}</RuntimeBadge> : null}</div>
                   {unicornError ? <p className="runtime-engine-error">{unicornError}</p> : null}
@@ -121,24 +121,25 @@ export function SettingsDialog({ settings, globalDependencies, onChange, onClose
                 </article>
 
                 <article className="runtime-engine-card">
-                  <header><Play size={15} /><strong>Blink process sandbox</strong><RuntimeBadge state="lazy">on demand</RuntimeBadge></header>
-                  <p>Current dynamic-Linux userspace/process backend. It mounts the selected <code>PT_INTERP</code> + recursive <code>DT_NEEDED</code> closure, validates GNU symbol versions and preserves observed crash RIP/code-byte evidence.</p>
-                  <div className="runtime-asset-list"><div><span>JS</span><code>vendor/blink/blinkenlib.js</code></div><div><span>WASM</span><code>vendor/blink/blinkenlib.wasm</code></div></div>
+                  <header><FolderOpen size={15} /><strong>Linux userspace + Global Dependencies</strong><RuntimeBadge state={globalDependencies.error ? 'error' : globalDependencies.entries.length ? 'ready' : 'warning'}>{globalDependencies.loading ? 'loading' : `${globalDependencies.entries.length} source${globalDependencies.entries.length === 1 ? '' : 's'}`}</RuntimeBadge></header>
+                  <p>The process layer builds the initial stack/auxv, exposes a bounded virtual filesystem, handles the supported syscall ABI and lets the real <code>ld-linux</code> load the exact recursive dependency closure supplied by the user.</p>
+                  {globalDependencies.error ? <p className="runtime-engine-error">{globalDependencies.error}</p> : null}
                 </article>
 
                 <article className="runtime-engine-card">
-                  <header><FolderOpen size={15} /><strong>Guest runtime libraries</strong><RuntimeBadge state={globalDependencies.error ? 'error' : globalDependencies.entries.length ? 'ready' : 'warning'}>{globalDependencies.loading ? 'loading' : `${globalDependencies.entries.length} source${globalDependencies.entries.length === 1 ? '' : 's'}`}</RuntimeBadge></header>
-                  <p>Global Dependencies are authoritative external runtime inputs. They are not copied into project exports and remain independent from NASM/GNU ld toolchain binaries.</p>
-                  {globalDependencies.error ? <p className="runtime-engine-error">{globalDependencies.error}</p> : null}
+                  <header><Play size={15} /><strong>Blink/WASM</strong><RuntimeBadge state="lazy">reference</RuntimeBadge></header>
+                  <p>Blink is no longer the normal guest-program backend. It remains available for explicit diagnostic comparison and for the isolated NASM/GNU ld tool-process environment while that toolchain path is still Blink-based.</p>
+                  <div className="runtime-asset-list"><div><span>JS</span><code>vendor/blink/blinkenlib.js</code></div><div><span>WASM</span><code>vendor/blink/blinkenlib.wasm</code></div></div>
                 </article>
               </div>
 
               <h3>Kernel-less Linux contract</h3>
               <dl className="runtime-contract">
-                <dt>Kernel</dt><dd>None. Guest Linux syscalls terminate at a browser userspace ABI/backend boundary.</dd>
-                <dt>Unicorn today</dt><dd>Static ET_EXEC CPU execution with virtual stdin/stdout/stderr and Linux-lite syscall handling. Dynamic loader support is still migrating.</dd>
-                <dt>Blink today</dt><dd>Dynamic x86-64 Linux process path with ld-linux/libc and Global Dependencies.</dd>
-                <dt>Analysis</dt><dd>ELF bytes + Capstone remain canonical regardless of which execution backend is selected.</dd>
+                <dt>Kernel</dt><dd>None. Linux syscalls terminate at the Inspector's bounded userspace ABI.</dd>
+                <dt>Dynamic loading</dt><dd>The real ELF interpreter executes under Unicorn and opens loader/libc/other DSOs from the prepared Global Dependency closure.</dd>
+                <dt>Filesystem</dt><dd>Only explicit project/runtime artifacts are visible. There is no host filesystem, shell, Git checkout or package manager inside the guest.</dd>
+                <dt>Blink</dt><dd>Reference/diagnostic and isolated toolchain backend; not the normal guest routing path.</dd>
+                <dt>Analysis</dt><dd>ELF bytes + Capstone remain canonical regardless of the execution provider.</dd>
               </dl>
             </>
           ) : null}
