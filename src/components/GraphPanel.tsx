@@ -1,5 +1,5 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Crosshair, GitBranch, Minus, Plus, RotateCcw, Trash2 } from 'lucide-react';
+import { Boxes, Crosshair, GitBranch, Minus, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import type { AnalysisGraph, GraphNode } from '../features/analysis/model';
 import { layoutGraph, type PositionedGraphNode } from '../features/analysis/layout';
 import type { ExecutionTraceProjection } from '../features/execution/follow';
@@ -221,6 +221,57 @@ function drawCompactNode(
   ctx.globalAlpha = 1;
 }
 
+function structureColors(category: string | undefined): { fill: string; stroke: string; eyebrow: string; title: string } {
+  const value = (category ?? '').toUpperCase();
+  if (value.includes('BINARY ARTIFACT')) return { fill: '#0b2132', stroke: '#238fce', eyebrow: '#66c8ff', title: '#eef9ff' };
+  if (value.includes('EXECUTABLE') || value.includes('ENTRY FUNCTION') || value.includes('ACTIVE FUNCTION') || value.includes('CODE')) return { fill: '#0d1e2b', stroke: '#2d87bb', eyebrow: '#5fb9e8', title: '#dceefa' };
+  if (value.includes('WRITABLE')) return { fill: '#151c18', stroke: '#6c8d67', eyebrow: '#9bc78f', title: '#dcebd8' };
+  if (value.includes('DEPENDENCY') || value.includes('INTERPRETER') || value.includes('DYNAMIC') || value.includes('LINK')) return { fill: '#171625', stroke: '#6c62a0', eyebrow: '#a59ae0', title: '#e5e0fb' };
+  if (value.includes('UNRESOLVED') || value.includes('PERMISSION')) return { fill: '#231416', stroke: '#9a4e55', eyebrow: '#e38d93', title: '#f4dadd' };
+  if (value.includes('SECTION') || value.includes('UNWIND') || value.includes('RELOCATION')) return { fill: '#0e1b1a', stroke: '#46796d', eyebrow: '#73b5a5', title: '#d8ece7' };
+  if (value.includes('COLLAPSED')) return { fill: '#11161c', stroke: '#465462', eyebrow: '#778797', title: '#c2cdd6' };
+  return { fill: '#101922', stroke: '#405c72', eyebrow: '#718ca1', title: '#d5e1ea' };
+}
+
+function drawStructureNode(ctx: CanvasRenderingContext2D, node: PositionedGraphNode, selected: boolean) {
+  const palette = structureColors(node.category);
+  roundedRect(ctx, node.x, node.y, node.width, node.height, 8);
+  ctx.fillStyle = palette.fill;
+  ctx.fill();
+  ctx.strokeStyle = selected ? '#39aaf2' : palette.stroke;
+  ctx.lineWidth = selected ? 2.4 : 1.25;
+  ctx.stroke();
+  if (selected) {
+    ctx.shadowColor = '#178fd8';
+    ctx.shadowBlur = 14;
+    ctx.stroke();
+    ctx.shadowBlur = 0;
+  }
+
+  ctx.font = '700 9px ui-sans-serif, system-ui, sans-serif';
+  ctx.fillStyle = palette.eyebrow;
+  ctx.fillText(fitText(ctx, (node.category ?? 'BINARY NODE').toUpperCase(), node.width - 24), node.x + 12, node.y + 16);
+
+  ctx.font = '600 12px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.fillStyle = palette.title;
+  ctx.fillText(fitText(ctx, node.title, node.width - 24), node.x + 12, node.y + 34);
+
+  ctx.font = '9px ui-monospace, SFMono-Regular, Menlo, monospace';
+  ctx.fillStyle = '#73899a';
+  ctx.fillText(fitText(ctx, node.detail, node.width - 24), node.x + 12, node.y + node.height - 12);
+
+  if (node.address !== undefined) {
+    const address = `0x${node.address.toString(16)}`;
+    ctx.font = '600 8px ui-monospace, SFMono-Regular, Menlo, monospace';
+    const addressWidth = ctx.measureText(address).width + 10;
+    roundedRect(ctx, node.x + node.width - addressWidth - 8, node.y + 7, addressWidth, 16, 5);
+    ctx.fillStyle = '#0a1118';
+    ctx.fill();
+    ctx.fillStyle = '#8fb8d1';
+    ctx.fillText(address, node.x + node.width - addressWidth - 3, node.y + 18);
+  }
+}
+
 export function GraphPanel({
   graph,
   title = 'Flow graph',
@@ -270,6 +321,7 @@ export function GraphPanel({
     const { width, height, dpr } = measured;
     const ctx = canvas.getContext('2d');
     if (!ctx) return;
+    const structural = graph.viewKind === 'binary-structure';
     ctx.setTransform(dpr, 0, 0, dpr, 0, 0);
     ctx.clearRect(0, 0, width, height);
     ctx.fillStyle = '#080e13';
@@ -280,7 +332,7 @@ export function GraphPanel({
     ctx.scale(viewport.zoom, viewport.zoom);
 
     if (grid) {
-      ctx.strokeStyle = '#14202a';
+      ctx.strokeStyle = structural ? '#111f29' : '#14202a';
       ctx.lineWidth = 1 / viewport.zoom;
       const step = 24;
       const left = -viewport.x / viewport.zoom;
@@ -297,18 +349,18 @@ export function GraphPanel({
       const from = nodeById.get(edge.from);
       const to = nodeById.get(edge.to);
       if (!from || !to) continue;
-      const horizontalDataEdge = edge.kind === 'data' && Math.abs((to.x + to.width / 2) - (from.x + from.width / 2)) > 100;
+      const horizontalDataEdge = !structural && edge.kind === 'data' && Math.abs((to.x + to.width / 2) - (from.x + from.width / 2)) > 100;
       const x1 = horizontalDataEdge ? (to.x >= from.x ? from.x + from.width : from.x) : from.x + from.width / 2;
       const y1 = horizontalDataEdge ? from.y + from.height / 2 : from.y + from.height;
       const x2 = horizontalDataEdge ? (to.x >= from.x ? to.x : to.x + to.width) : to.x + to.width / 2;
       const y2 = horizontalDataEdge ? to.y + to.height / 2 : to.y;
       const traceCount = trace?.edgeCounts.get(edge.id) ?? 0;
-      const conditional = conditionalSource(graph, edge.from);
+      const conditional = !structural && conditionalSource(graph, edge.from);
       const trueBranch = conditional && edge.kind === 'branch';
       const falseBranch = conditional && edge.kind === 'control' && edge.label === 'fallthrough';
-      const baseColor = trueBranch ? '#24c979' : falseBranch ? '#f05c64' : edge.kind === 'call' ? '#9270cf' : edge.kind === 'data' ? '#48ab8c' : '#6f8497';
+      const baseColor = structural ? (edge.kind === 'call' ? '#625d8a' : edge.kind === 'data' ? '#3d6c64' : '#385c73') : trueBranch ? '#24c979' : falseBranch ? '#f05c64' : edge.kind === 'call' ? '#9270cf' : edge.kind === 'data' ? '#48ab8c' : '#6f8497';
       ctx.strokeStyle = traceCount ? '#2ca9ff' : baseColor;
-      ctx.lineWidth = traceCount ? 3 : edge.kind === 'control' ? 1.5 : 1.8;
+      ctx.lineWidth = traceCount ? 3 : structural ? 1.35 : edge.kind === 'control' ? 1.5 : 1.8;
       ctx.beginPath();
       let labelX: number;
       let labelY: number;
@@ -320,7 +372,7 @@ export function GraphPanel({
         labelY = (y1 + y2) / 2 - 5;
       } else {
         const direction = x2 === x1 ? 0 : Math.sign(x2 - x1);
-        const horizontalPull = Math.min(90, Math.abs(x2 - x1) * 0.36) * direction;
+        const horizontalPull = Math.min(structural ? 64 : 90, Math.abs(x2 - x1) * 0.36) * direction;
         const midY = y1 + Math.max(24, (y2 - y1) * 0.48);
         ctx.moveTo(x1, y1);
         ctx.bezierCurveTo(x1 + horizontalPull, midY, x2 - horizontalPull, midY, x2, y2);
@@ -341,8 +393,8 @@ export function GraphPanel({
         if (trueBranch) drawPill(ctx, `T · ${edge.label}`, labelX, labelY, '#0f3023', '#66e1a1', '#247a52');
         else if (falseBranch) drawPill(ctx, 'F · fallthrough', labelX, labelY, '#34171a', '#ff9196', '#874149');
         else {
-          ctx.font = '10px ui-monospace, SFMono-Regular, Menlo, monospace';
-          ctx.fillStyle = traceCount ? '#83d4ff' : '#73889a';
+          ctx.font = `${structural ? 9 : 10}px ui-monospace, SFMono-Regular, Menlo, monospace`;
+          ctx.fillStyle = traceCount ? '#83d4ff' : structural ? '#607b90' : '#73889a';
           ctx.fillText(edge.label, labelX + 7, labelY - 1);
         }
       }
@@ -354,7 +406,8 @@ export function GraphPanel({
       const executionCount = trace?.nodeCounts.get(node.id) ?? 0;
       const visited = executionCount > 0 && !current;
       const state = { selected, current, visited, executionCount };
-      if (graph.viewKind === 'function-cfg' && node.blockInstructions?.length) drawCfgNode(ctx, graph, node, state);
+      if (structural) drawStructureNode(ctx, node, selected);
+      else if (graph.viewKind === 'function-cfg' && node.blockInstructions?.length) drawCfgNode(ctx, graph, node, state);
       else drawCompactNode(ctx, node, state);
     }
     ctx.restore();
@@ -390,8 +443,9 @@ export function GraphPanel({
     const node = nodeById.get(targetId);
     const measured = measureHost();
     if (!node || !measured) return;
-    setViewport((current) => centerViewport(node, measured.width, measured.height, Math.max(current.zoom, 0.72)));
-  }, [focusId, measureHost, nodeById, selectedId, trace?.currentNodeId]);
+    const minimumFollowZoom = graph?.viewKind === 'binary-structure' ? 0.55 : 0.72;
+    setViewport((current) => centerViewport(node, measured.width, measured.height, Math.max(current.zoom, minimumFollowZoom)));
+  }, [focusId, graph?.viewKind, measureHost, nodeById, selectedId, trace?.currentNodeId]);
 
   function screenToGraph(clientX: number, clientY: number) {
     const canvas = canvasRef.current!;
@@ -415,10 +469,11 @@ export function GraphPanel({
     return <div className="graph-panel empty"><EmptyState icon={<GitBranch size={30} />} title="No graph yet" body="Open an ASM or binary file. Analysis starts automatically and commits only valid results." /></div>;
   }
 
+  const ToolbarIcon = graph.viewKind === 'binary-structure' ? Boxes : GitBranch;
   return (
     <section className="graph-panel">
       <div className="graph-toolbar">
-        <span><GitBranch size={14} /> {title}</span>
+        <span><ToolbarIcon size={14} /> {title}</span>
         <div>
           <IconButton title="Zoom out" onClick={() => setViewport((value) => ({ ...value, zoom: Math.max(MIN_ZOOM, value.zoom - 0.1) }))}><Minus size={14} /></IconButton>
           <span className="zoom-value">{Math.round(viewport.zoom * 100)}%</span>
