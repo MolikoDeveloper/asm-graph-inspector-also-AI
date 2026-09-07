@@ -6,12 +6,20 @@ import {
   type ExecutionPolicy,
   type ExecutionRegisterSnapshot,
   type ExecutionRuntimeDisassemblySnapshot,
+  type ExecutionRuntimeImageSnapshot,
   type ExecutionSnapshot,
   type ExecutionStatus
 } from './model';
 import { materializeRuntimeDependencyClosure, type MaterializedRuntimeModule, type RuntimeDependencyClosure } from './runtimeDependencies';
 import { describeExecutionError, ExecutionProviderDiagnosticBuffer } from './providerDiagnostics';
 import { validateBlinkBuildProfile } from './blinkBuildProfile';
+import {
+  RuntimeImageResolver,
+  runtimeImageCandidateFromElfBytes,
+  runtimeImageCandidateFromLoadedImage,
+  type RuntimeImageCandidate,
+  type RuntimeImageRole
+} from './runtimeImageResolver';
 
 const SIGTRAP = 5;
 const BLINK_PREEMPT = 40;
@@ -156,6 +164,14 @@ function linkFile(fs: BlinkFs, source: string, destination: string): void {
   }
 }
 
+function moduleRole(module: MaterializedRuntimeModule, interpreterPath: string | null): RuntimeImageRole {
+  if (!interpreterPath) return 'dependency';
+  const interpreterName = basename(interpreterPath);
+  return module.requestedName === interpreterName || module.fileName === interpreterName || module.soname === interpreterName
+    ? 'interpreter'
+    : 'dependency';
+}
+
 export class BlinkProcessSession {
   private statusValue: ExecutionStatus = 'ready';
   private instructionCountValue = 0;
@@ -175,6 +191,7 @@ export class BlinkProcessSession {
   private discardPrelude = false;
   private preludeCursor = 0;
   private disposed = false;
+  private runtimeImageResolver: RuntimeImageResolver | null = null;
   private readonly providerDiagnostics = new ExecutionProviderDiagnosticBuffer();
 
   private constructor(
@@ -198,8 +215,29 @@ export class BlinkProcessSession {
     return session;
   }
 
+  private prepareRuntimeImageResolver(closure: RuntimeDependencyClosure): void {
+    const candidates: RuntimeImageCandidate[] = [];
+    const fixedBiases = new Map<string, bigint>();
+    const programId = `program:${this.file.id}`;
+    candidates.push(runtimeImageCandidateFromLoadedImage(programId, this.file.name, 'program', this.file.bytes!, this.image));
+    if (this.image.kind === 'executable') fixedBiases.set(programId, 0n);
+
+    for (let index = 0; index < closure.modules.length; index += 1) {
+      const module = closure.modules[index];
+      const role = moduleRole(module, closure.interpreterPath);
+      const id = `${role}:${index}:${module.sourceId}:${module.fileName}`;
+      try {
+        candidates.push(runtimeImageCandidateFromElfBytes(id, module.fileName, role, module.bytes));
+      } catch (error: unknown) {
+        this.providerDiagnostics.add('warning', `Runtime image indexing skipped for ${module.fileName}: ${describeExecutionError(error)}`);
+      }
+    }
+    this.runtimeImageResolver = new RuntimeImageResolver(candidates, fixedBiases);
+  }
+
   private async initialize(): Promise<void> {
     const closure = await this.runtime.materialize(this.image.interpreter, this.image.neededLibraries);
+    this.prepareRuntimeImageResolver(closure);
     const { factory, wasmUrl } = await this.runtime.loadFactory();
 
     const stdout = (byte: number) => { if (this.captureEnabled) this.captureOutput('stdout', byte); };
@@ -256,7 +294,6 @@ export class BlinkProcessSession {
       message: `Blink/WASM materialized ${this.file.name} with ${closure.modules.length} runtime module(s), ${closure.totalBytes.toLocaleString()} dependency bytes. Guest execution has not started yet.`
     });
   }
-
 
   private captureProviderDiagnostic(level: 'info' | 'warning' | 'error', value: unknown): void {
     const raw = String(value ?? '').trim();
@@ -366,7 +403,7 @@ export class BlinkProcessSession {
     };
   }
 
-  private readRuntimeDisassembly(): ExecutionRuntimeDisassemblySnapshot | null {
+  private readRuntimeDisassembly(rip: bigint | null | undefined): ExecutionRuntimeDisassemblySnapshot | null {
     const module = this.module;
     if (!module || !this.clstruct || this.processMode !== 'debug-step') return null;
     const view = new DataView(module.wasmExports.memory.buffer);
@@ -399,10 +436,31 @@ export class BlinkProcessSession {
       if (text.trim()) lastNonEmpty = line;
     }
     if (lastNonEmpty < 0 || currentLine >= lines.length) return null;
+    const visibleLines = lines.slice(0, Math.max(lastNonEmpty + 1, currentLine + 1));
+    let image: ExecutionRuntimeImageSnapshot | null = null;
+    if (rip !== null && rip !== undefined && this.runtimeImageResolver) {
+      try {
+        const match = this.runtimeImageResolver.resolve(visibleLines, rip, currentLine);
+        if (match) {
+          image = {
+            name: match.name,
+            role: match.role,
+            runtimeAddress: match.runtimeAddress,
+            imageAddress: match.imageAddress,
+            loadBias: match.loadBias,
+            confidence: match.confidence,
+            signatureBytes: match.signatureBytes
+          };
+        }
+      } catch (error: unknown) {
+        this.providerDiagnostics.add('warning', `Blink runtime image identity unavailable: ${describeExecutionError(error)}`);
+      }
+    }
     return {
       source: 'blink-debugger',
-      lines: lines.slice(0, Math.max(lastNonEmpty + 1, currentLine + 1)),
-      currentLine
+      lines: visibleLines,
+      currentLine,
+      image
     };
   }
 
@@ -488,7 +546,7 @@ export class BlinkProcessSession {
       if (!terminal(this.statusValue)) this.trapFromError(error);
       else this.providerDiagnostics.add('error', describeExecutionError(error));
     }
-    try { runtimeDisassembly = this.readRuntimeDisassembly(); }
+    try { runtimeDisassembly = this.readRuntimeDisassembly(registers?.rip); }
     catch (error: unknown) {
       this.providerDiagnostics.add('warning', `Blink live disassembly unavailable: ${describeExecutionError(error)}`);
     }
@@ -514,5 +572,6 @@ export class BlinkProcessSession {
   dispose(): void {
     this.disposed = true;
     this.module = null;
+    this.runtimeImageResolver = null;
   }
 }
