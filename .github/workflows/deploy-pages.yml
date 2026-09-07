@@ -47,6 +47,9 @@ jobs:
       - name: Build Blink WASM runtime
         run: bun run vendor:blink
 
+      - name: Toolchain tests
+        run: bun run test:toolchain
+
       - name: Execution tests
         run: bun run test:execution
 
