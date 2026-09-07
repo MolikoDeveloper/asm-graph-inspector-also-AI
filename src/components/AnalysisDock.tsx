@@ -2,6 +2,7 @@ import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
 import { Binary, Boxes, Braces, GitBranch, GitFork, Grid2X2, MemoryStick, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import type { AnalysisGraph } from '../features/analysis/model';
 import { analyzeDataflow, projectDataflow, type DataflowProjection } from '../features/analysis/dataflow';
+import { buildBinaryStructureGraph } from '../features/analysis/binaryStructureGraph';
 import { buildProgramFlow, type ProgramFlowScope } from '../features/analysis/programFlow';
 import type { BinaryAnalysisSummary } from '../features/binary/model';
 import { graphNodeForAddress, type ExecutionTraceProjection } from '../features/execution/follow';
@@ -12,13 +13,14 @@ import { InspectorPanel } from './InspectorPanel';
 import { ProgramFlowToolbar } from './ProgramFlowToolbar';
 import { ResizeHandle } from './ResizeHandle';
 
-type AnalysisTab = 'cfg' | 'dataflow' | 'disassembly';
+type AnalysisTab = 'structure' | 'cfg' | 'dataflow' | 'disassembly';
 type DisassemblyView = 'functions' | BinaryModelViewKind;
 type CfgView = 'program' | 'function';
 
 const INSPECTOR_VISIBILITY_KEY = 'asm-graph-inspector.analysis-properties-visible';
 
 const BINARY_TABS: Array<{ id: AnalysisTab; label: string; icon: typeof GitBranch }> = [
+  { id: 'structure', label: 'Structure', icon: Boxes },
   { id: 'cfg', label: 'CFG', icon: GitBranch },
   { id: 'dataflow', label: 'Dataflow', icon: GitFork },
   { id: 'disassembly', label: 'Disassembly', icon: Binary }
@@ -95,7 +97,7 @@ export function AnalysisDock({
   }, [inspectorVisible]);
 
   useEffect(() => {
-    if (!binarySummary && tab === 'disassembly') setTab('cfg');
+    if (!binarySummary && (tab === 'structure' || tab === 'disassembly')) setTab('cfg');
   }, [binarySummary, tab]);
 
   useEffect(() => {
@@ -103,7 +105,11 @@ export function AnalysisDock({
     setHiddenGroups(new Set());
     setExpandedGroups(new Set());
     setProgramScope('visited');
-  }, [binaryFileId]);
+    if (binaryFileId) {
+      setTab('structure');
+      onSelect(null);
+    }
+  }, [binaryFileId, onSelect]);
 
   useEffect(() => {
     if (!binarySummary) return;
@@ -115,6 +121,7 @@ export function AnalysisDock({
   }, [binarySummary]);
 
   const functions = useMemo(() => binarySummary ? [...binarySummary.functions].sort((a, b) => a.address - b.address) : [], [binarySummary]);
+  const structureGraph = useMemo(() => binarySummary ? buildBinaryStructureGraph(binarySummary) : null, [binarySummary]);
   const dataflow = useMemo(() => graph ? analyzeDataflow(graph, binarySummary) : null, [graph, binarySummary]);
   const dataflowGraph = useMemo(() => dataflow ? projectDataflow(dataflow, projection) : null, [dataflow, projection]);
   const programFlow = useMemo(() => {
@@ -136,13 +143,13 @@ export function AnalysisDock({
   }, [binarySummary, summaryHistory, programScope, hiddenGroups, expandedGroups]);
   const cfgGraph = binarySummary && cfgView === 'program' ? programFlow?.graph ?? graph : graph;
   const executionNodeId = useMemo(() => tab === 'cfg' && cfgView === 'function' && executionAddress !== null ? graphNodeForAddress(graph, executionAddress)?.id ?? null : null, [cfgView, executionAddress, graph, tab]);
-  const graphForInspector = tab === 'dataflow' ? dataflowGraph : tab === 'cfg' ? cfgGraph : graph;
+  const graphForInspector = tab === 'structure' ? structureGraph : tab === 'dataflow' ? dataflowGraph : tab === 'cfg' ? cfgGraph : graph;
   const tabs = binarySummary ? BINARY_TABS : SOURCE_TABS;
 
   useEffect(() => {
     if (tab === 'disassembly') return;
-    if (!selectedId || !graphForInspector) return;
-    if (graphForInspector.nodes.some((node) => node.id === selectedId)) return;
+    if (!graphForInspector) return;
+    if (selectedId && graphForInspector.nodes.some((node) => node.id === selectedId)) return;
     onSelect(graphForInspector.nodes[0]?.id ?? null);
   }, [graphForInspector, selectedId, onSelect, tab]);
 
@@ -198,7 +205,7 @@ export function AnalysisDock({
       }
     }
     const node = graphForInspector.nodes.find((candidate) => candidate.id === id);
-    if (node) onNavigate(node);
+    if (node?.address !== undefined) onNavigate({ address: node.address });
   };
 
   const graphColumns = {
@@ -237,6 +244,7 @@ export function AnalysisDock({
         </div>
         <div className="analysis-context-controls">
           {analysisStale ? <span className="analysis-stale-badge">Last valid snapshot</span> : null}
+          {binarySummary && tab === 'structure' ? <span className="binary-structure-summary">ELF64 · {binarySummary.image.kind} · {binarySummary.image.sections.length} sections · {binarySummary.functions.length} functions</span> : null}
           {binarySummary && tab === 'cfg' ? (
             <label className="cfg-mode-picker">
               <GitBranch size={13} />
@@ -257,10 +265,26 @@ export function AnalysisDock({
               {dataflow ? <small>{dataflow.values.length} values · {dataflow.phiValues.length} φ</small> : null}
             </label>
           ) : null}
-          {binarySummary && tab !== 'disassembly' ? <label className="function-picker"><Binary size={13} /><span>Function</span><select value={binarySummary.rootAddress} onChange={(event: ChangeEvent<HTMLSelectElement>) => selectFunction(Number(event.currentTarget.value))}>{functions.map((fn) => <option key={`${fn.address}:${fn.name}`} value={fn.address}>{fn.name} · 0x{fn.address.toString(16)}</option>)}</select></label> : null}
+          {binarySummary && (tab === 'cfg' || tab === 'dataflow') ? <label className="function-picker"><Binary size={13} /><span>Function</span><select value={binarySummary.rootAddress} onChange={(event: ChangeEvent<HTMLSelectElement>) => selectFunction(Number(event.currentTarget.value))}>{functions.map((fn) => <option key={`${fn.address}:${fn.name}`} value={fn.address}>{fn.name} · 0x{fn.address.toString(16)}</option>)}</select></label> : null}
           {inspectorToggle}
         </div>
       </header>
+
+      {tab === 'structure' && binarySummary ? (
+        <div className={`analysis-dock analysis-dock-cfg binary-structure-dock ${inspectorVisible ? '' : 'inspector-collapsed'}`} style={graphColumns}>
+          <GraphPanel
+            graph={structureGraph}
+            title={`Binary structure · ${binarySummary.image.sourcePath.split('/').at(-1) ?? binarySummary.image.sourcePath}`}
+            grid={grid}
+            labels={labels}
+            selectedId={selectedId}
+            onSelect={selectNode}
+            onActivate={activateNode}
+          />
+          {inspectorVisible ? <ResizeHandle orientation="vertical" onDelta={(delta) => setInspectorWidth((width) => Math.min(520, Math.max(190, width - delta)))} /> : null}
+          {inspectorVisible ? <InspectorPanel graph={structureGraph} selectedId={selectedId} onNavigate={onNavigate} /> : null}
+        </div>
+      ) : null}
 
       {tab === 'cfg' ? (
         <div className={`cfg-view-shell ${!binarySummary || cfgView === 'function' ? 'function-only' : ''} ${inspectorVisible ? '' : 'inspector-collapsed'}`}>
@@ -275,7 +299,7 @@ export function AnalysisDock({
               onScopeChange={setProgramScope}
               onToggleVisibility={toggleGroupVisibility}
               onShowAll={() => setHiddenGroups(new Set())}
-              onHideAll={() => setHiddenGroups(new Set(programFlow.groups.map((group) => group.id))) }
+              onHideAll={() => setHiddenGroups(new Set(programFlow.groups.map((group) => group.id)))}
               onCompactAll={() => setExpandedGroups(new Set())}
             />
           ) : null}
