@@ -1,0 +1,130 @@
+.runtime-diagnostics {
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 32px minmax(0, 1fr);
+  background: #080d12;
+  color: #aebfcb;
+}
+
+.runtime-diagnostics-header {
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  padding: 0 9px;
+  border-bottom: 1px solid #18242e;
+  background: #0a1117;
+  color: #607789;
+  font-size: 9px;
+}
+
+.runtime-diagnostics-header > div { min-width: 0; display: flex; align-items: center; gap: 7px; }
+.runtime-diagnostics-header strong { max-width: 280px; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #d4dfe7; font-size: 10px; }
+.runtime-diagnostics-header code { color: #6e8799; font-size: 9px; }
+.runtime-diagnostics-header > span { flex: 0 0 auto; color: #566e80; }
+
+.runtime-diagnostics-status {
+  padding: 2px 6px;
+  border: 1px solid #30404d;
+  border-radius: 8px;
+  color: #8196a6;
+  font: 8px ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-transform: uppercase;
+}
+.runtime-diagnostics-status.running { border-color: #2e6685; background: #0d202d; color: #86caef; }
+.runtime-diagnostics-status.exited { border-color: #2e6249; background: #0c1e18; color: #83d1a6; }
+.runtime-diagnostics-status.trapped { border-color: #734047; background: #251114; color: #eb979e; }
+.runtime-diagnostics-status.ready, .runtime-diagnostics-status.paused { border-color: #5f5330; background: #1c180d; color: #cfb971; }
+
+.runtime-diagnostics-scroll { min-height: 0; overflow: auto; padding: 8px; scrollbar-gutter: stable; }
+
+.runtime-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(4, minmax(110px, 1fr));
+  gap: 1px;
+  margin-bottom: 8px;
+  border: 1px solid #1c2a35;
+  background: #1c2a35;
+}
+.runtime-summary-grid span { min-width: 0; display: grid; gap: 3px; padding: 7px 8px; background: #091017; }
+.runtime-summary-grid b { color: #607c90; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; letter-spacing: .03em; }
+.runtime-summary-grid code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #b7c9d6; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.runtime-summary-grid code.preflight-compatible { color: #79cca0; }
+.runtime-summary-grid code.preflight-incompatible, .runtime-summary-grid code.preflight-error { color: #ea8c94; }
+.runtime-summary-grid code.preflight-scanning { color: #d7b867; }
+
+.runtime-diagnostic-block,
+.runtime-diagnostic-details,
+.runtime-register-panel,
+.runtime-process-output,
+.runtime-analysis-log {
+  margin-top: 8px;
+  border: 1px solid #21313d;
+  background: #091017;
+}
+
+.runtime-diagnostic-block { padding: 8px 9px; }
+.runtime-diagnostic-block > strong,
+.runtime-process-output > strong,
+.runtime-analysis-log > strong { display: block; margin-bottom: 6px; color: #9fb3c2; font-size: 9px; text-transform: uppercase; letter-spacing: .04em; }
+.runtime-diagnostic-block p { margin: 3px 0; color: #8398a8; font: 9px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; }
+.runtime-diagnostic-block.error { border-color: #673b42; background: #150c0f; }
+.runtime-diagnostic-block.error strong, .runtime-diagnostic-block.error p { color: #dda0a5; }
+
+.runtime-diagnostic-details summary {
+  padding: 7px 9px;
+  color: #849aaa;
+  cursor: pointer;
+  user-select: none;
+  font-size: 9px;
+}
+.runtime-diagnostic-details.incompatible,
+.runtime-diagnostic-details.error { border-color: #633a40; }
+.runtime-diagnostic-details.compatible { border-color: #2c5140; }
+.runtime-diagnostic-detail-body { display: grid; gap: 4px; padding: 7px 9px 9px; border-top: 1px solid #18252f; }
+.runtime-diagnostic-detail-body p { margin: 0; color: #71889a; font: 9px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+.runtime-diagnostic-detail-body code { color: #bc9297; font: 8px/1.35 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.runtime-register-panel { padding: 8px 9px; }
+.runtime-register-head { display: grid; grid-template-columns: repeat(3, minmax(0, 1fr)); gap: 6px 10px; padding-bottom: 7px; border-bottom: 1px solid #17242e; }
+.runtime-register-head span, .runtime-register-grid span { min-width: 0; display: grid; grid-template-columns: 48px minmax(0, 1fr); gap: 5px; align-items: baseline; }
+.runtime-register-head b, .runtime-register-grid b { color: #60798b; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.runtime-register-head code, .runtime-register-grid code { min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #b8c9d6; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.runtime-register-grid { display: grid; grid-template-columns: repeat(2, minmax(210px, 1fr)); gap: 3px 12px; padding-top: 7px; }
+
+.runtime-diagnostic-block.crash { border-color: #77414a; background: #150b0e; }
+.runtime-crash-heading { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+.runtime-crash-heading strong { color: #e4a2a8; font-size: 9px; text-transform: uppercase; }
+.runtime-crash-heading code { color: #f0bcc1; font-size: 9px; }
+.runtime-crash-grid { display: grid; grid-template-columns: repeat(2, minmax(150px, 1fr)); gap: 6px 12px; margin-top: 7px; }
+.runtime-crash-grid span { min-width: 0; display: grid; gap: 2px; }
+.runtime-crash-grid b { color: #8e676d; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; }
+.runtime-crash-grid code { overflow-wrap: anywhere; color: #dcc3c6; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.runtime-diagnostic-block.crash pre { margin: 8px 0 0; padding: 7px; border: 1px solid #321e22; background: #080506; color: #ebc9cc; font: 9px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+
+.runtime-provider-list { max-height: 180px; overflow: auto; border-top: 1px solid #18252f; }
+.runtime-provider-list pre { display: grid; grid-template-columns: 48px auto minmax(0, 1fr); gap: 6px; margin: 0; padding: 5px 8px; color: #9eb0be; font: 9px/1.4 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; word-break: break-word; }
+.runtime-provider-list pre + pre { border-top: 1px solid #15212a; }
+.runtime-provider-list b { color: #6c8597; text-transform: uppercase; }
+.runtime-provider-list em { color: #ad8f5a; font-style: normal; }
+.runtime-provider-list pre.warning span { color: #d1b276; }
+.runtime-provider-list pre.error span { color: #d88e94; }
+
+.runtime-process-output { padding: 8px 9px; }
+.runtime-process-output pre { margin: 0; color: #d4dee6; font: 10px/1.42 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; overflow-wrap: anywhere; }
+
+.runtime-analysis-log { padding: 8px 9px; }
+.runtime-analysis-log > p { margin: 0; color: #5f7486; font-size: 9px; }
+.runtime-analysis-log pre { display: grid; grid-template-columns: 72px minmax(0, 1fr); gap: 8px; margin: 0; color: #889baa; font: 9px/1.45 ui-monospace, SFMono-Regular, Menlo, monospace; white-space: pre-wrap; }
+.runtime-analysis-log time { color: #52697b; }
+.runtime-analysis-log pre.success span { color: #71c899; }
+.runtime-analysis-log pre.error span { color: #e3868e; }
+.runtime-analysis-log pre.muted span { color: #607586; }
+
+@media (max-width: 1100px) {
+  .runtime-summary-grid { grid-template-columns: repeat(2, minmax(120px, 1fr)); }
+  .runtime-register-head { grid-template-columns: 1fr; }
+  .runtime-register-grid { grid-template-columns: 1fr; }
+}
