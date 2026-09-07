@@ -3,6 +3,7 @@ import { loadCapstone } from '../capstone/capstoneLoader';
 import { AsmSourceExecutionSession, asmSourceExecutionSupport } from './asmSourceSession';
 import { DEFAULT_EXECUTION_POLICY, type ExecutionSnapshot, type ExecutionSupport, type ExecutionTarget } from './model';
 import { BlinkProcessSession } from './blinkProcessSession';
+import { auditBlinkIsaForFile, describeBlinkIsaAuditFailure } from './blinkIsaPreflight';
 import { executionSupport, X86ExecutionSession } from './session';
 import { registerActiveExecutionInputSink } from './activeInput';
 import { appendExecutionStdin } from './stdinQueue';
@@ -79,6 +80,8 @@ export function useExecutionController() {
       if (target.kind === 'asm-source') {
         session = new AsmSourceExecutionSession(target.file, target.source, DEFAULT_EXECUTION_POLICY);
       } else if (support.provider === 'blink-process') {
+        const isaAudit = await auditBlinkIsaForFile(target.file);
+        if (!isaAudit.compatible) throw new Error(describeBlinkIsaAuditFailure(target.file.name, isaAudit));
         session = await BlinkProcessSession.create(target.file, target.image, DEFAULT_EXECUTION_POLICY);
       } else {
         session = new X86ExecutionSession(target.file, target.image, await loadCapstone(), DEFAULT_EXECUTION_POLICY);
