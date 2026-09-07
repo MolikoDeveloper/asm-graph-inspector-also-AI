@@ -1,0 +1,24 @@
+.execution-auto-speed { height: 24px; border: 1px solid #263746; border-radius: 3px; background: #0e171e; color: #93a7b7; font-size: 9px; padding: 0 4px; }
+.execution-metrics { display: grid; grid-template-columns: repeat(3, minmax(120px, 1fr)); gap: 5px 8px; margin: 0 0 8px; padding: 7px 8px; border: 1px solid #1c2a35; background: #091017; }
+.execution-metrics span { min-width: 0; display: grid; gap: 2px; }
+.execution-metrics b { color: #607c90; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; }
+.execution-metrics code { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; color: #b7c9d6; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.execution-metrics code.building { color: #d9bd75; }
+.execution-metrics code.success, .execution-metrics code.reused { color: #82caa2; }
+.execution-metrics code.error { color: #dc8f96; }
+.virtual-terminal { min-height: 0; display: grid; grid-template-rows: 24px minmax(0, 1fr) auto; background: #060b0f; }
+.virtual-terminal header { display: flex; align-items: center; justify-content: space-between; gap: 8px; padding: 0 8px; color: #658097; background: #0b1218; border-bottom: 1px solid #15212a; font: 8px ui-monospace, SFMono-Regular, Menlo, monospace; text-transform: uppercase; }
+.virtual-terminal header span:last-child { color: #4f6678; text-transform: none; }
+.virtual-terminal pre { min-height: 0; margin: 0; padding: 8px 9px; overflow: auto; white-space: pre; color: #c7d5df; font: 10px/1.28 ui-monospace, SFMono-Regular, Menlo, monospace; tab-size: 8; }
+.virtual-cli-form { min-width: 0; display: grid; grid-template-columns: auto minmax(0, 1fr) auto; gap: 6px; align-items: center; padding: 6px 7px; border-top: 1px solid #15212a; background: #091017; }
+.virtual-cli-form code { color: #4c99c7; font-size: 9px; }
+.virtual-cli-form input { min-width: 0; height: 25px; border: 1px solid #253746; border-radius: 3px; outline: 0; background: #071018; color: #c4d3de; padding: 0 7px; font: 9px ui-monospace, SFMono-Regular, Menlo, monospace; }
+.virtual-cli-form input:focus { border-color: #3d8ec8; }
+.virtual-cli-form button { height: 25px; padding: 0 8px; border: 1px solid #2e5068; border-radius: 3px; background: #102331; color: #a9d2ea; font-size: 9px; cursor: pointer; }
+.virtual-cli-form button:hover { background: #153047; }
+.execution-io.virtualized { grid-template-rows: minmax(0, 1fr) minmax(70px, .35fr); }
+.execution-auto-active { border-color: #3e7a9b !important; background: #112636 !important; color: #b7e4ff !important; }
+@media (max-width: 1050px) {
+  .execution-metrics { grid-template-columns: 1fr; }
+  .execution-auto-speed { max-width: 70px; }
+}
