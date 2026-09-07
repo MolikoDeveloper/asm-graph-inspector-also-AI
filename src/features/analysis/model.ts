@@ -29,7 +29,6 @@ export interface GraphNode {
   dataflowLane?: string;
 }
 
-
 export interface GraphEdge {
   id: string;
   from: string;
@@ -44,7 +43,7 @@ export interface AnalysisGraph {
   edges: GraphEdge[];
   labels: Map<string, string>;
   diagnostics: string[];
-  sourceKind?: 'asm-source' | 'raw-elf-capstone';
+  sourceKind?: 'asm-source' | 'disassembly-dump' | 'raw-elf-capstone';
   architecture?: string;
   entryAddress?: number;
   viewKind?: 'source-flow' | 'function-cfg' | 'program-flow' | 'dataflow';
