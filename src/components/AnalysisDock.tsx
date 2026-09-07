@@ -1,5 +1,5 @@
 import { useEffect, useMemo, useState, type ChangeEvent } from 'react';
-import { Binary, Boxes, Braces, GitBranch, GitFork, Grid2X2, MemoryStick } from 'lucide-react';
+import { Binary, Boxes, Braces, GitBranch, GitFork, Grid2X2, MemoryStick, PanelRightClose, PanelRightOpen } from 'lucide-react';
 import type { AnalysisGraph } from '../features/analysis/model';
 import { analyzeDataflow, projectDataflow, type DataflowProjection } from '../features/analysis/dataflow';
 import { buildProgramFlow, type ProgramFlowScope } from '../features/analysis/programFlow';
@@ -15,6 +15,8 @@ import { ResizeHandle } from './ResizeHandle';
 type AnalysisTab = 'cfg' | 'dataflow' | 'disassembly';
 type DisassemblyView = 'functions' | BinaryModelViewKind;
 type CfgView = 'program' | 'function';
+
+const INSPECTOR_VISIBILITY_KEY = 'asm-graph-inspector.analysis-properties-visible';
 
 const BINARY_TABS: Array<{ id: AnalysisTab; label: string; icon: typeof GitBranch }> = [
   { id: 'cfg', label: 'CFG', icon: GitBranch },
@@ -36,8 +38,6 @@ const DISASSEMBLY_VIEWS: Array<{ id: DisassemblyView; label: string; icon: typeo
   { id: 'unwind', label: 'Unwind', icon: MemoryStick }
 ];
 
-
-
 const DATAFLOW_PROJECTIONS: Array<{ id: DataflowProjection; label: string }> = [
   { id: 'flow', label: 'Flow' },
   { id: 'registers', label: 'Registers' },
@@ -45,6 +45,11 @@ const DATAFLOW_PROJECTIONS: Array<{ id: DataflowProjection; label: string }> = [
   { id: 'calls', label: 'Calls / syscalls' },
   { id: 'raw', label: 'Raw SSA' }
 ];
+
+function initialInspectorVisibility(): boolean {
+  if (typeof window === 'undefined') return true;
+  return window.localStorage.getItem(INSPECTOR_VISIBILITY_KEY) !== '0';
+}
 
 export function AnalysisDock({
   graph,
@@ -82,7 +87,12 @@ export function AnalysisDock({
   const [expandedGroups, setExpandedGroups] = useState<Set<string>>(() => new Set());
   const [summaryHistory, setSummaryHistory] = useState<Map<number, BinaryAnalysisSummary>>(() => new Map());
   const [inspectorWidth, setInspectorWidth] = useState(250);
+  const [inspectorVisible, setInspectorVisible] = useState(initialInspectorVisibility);
   const binaryFileId = binarySummary?.image.sourceFileId ?? null;
+
+  useEffect(() => {
+    window.localStorage.setItem(INSPECTOR_VISIBILITY_KEY, inspectorVisible ? '1' : '0');
+  }, [inspectorVisible]);
 
   useEffect(() => {
     if (!binarySummary && tab === 'disassembly') setTab('cfg');
@@ -135,7 +145,6 @@ export function AnalysisDock({
     if (graphForInspector.nodes.some((node) => node.id === selectedId)) return;
     onSelect(graphForInspector.nodes[0]?.id ?? null);
   }, [graphForInspector, selectedId, onSelect, tab]);
-
 
   useEffect(() => {
     if (binarySummary && executionAddress !== null && executionAddress !== undefined) {
@@ -193,7 +202,9 @@ export function AnalysisDock({
   };
 
   const graphColumns = {
-    gridTemplateColumns: `minmax(180px, 1fr) 4px minmax(170px, min(${inspectorWidth}px, 38%))`
+    gridTemplateColumns: inspectorVisible
+      ? `minmax(180px, 1fr) 4px minmax(190px, min(${inspectorWidth}px, 38%))`
+      : 'minmax(0, 1fr)'
   };
 
   const toggleGroupVisibility = (groupId: string) => {
@@ -204,6 +215,19 @@ export function AnalysisDock({
       return next;
     });
   };
+
+  const inspectorToggle = tab !== 'disassembly' ? (
+    <button
+      type="button"
+      className={`analysis-properties-toggle ${inspectorVisible ? 'active' : ''}`}
+      onClick={() => setInspectorVisible((value) => !value)}
+      title={inspectorVisible ? 'Hide Properties' : 'Show Properties'}
+      aria-pressed={inspectorVisible}
+    >
+      {inspectorVisible ? <PanelRightClose size={13} /> : <PanelRightOpen size={13} />}
+      <span>Properties</span>
+    </button>
+  ) : null;
 
   return (
     <section className="analysis-dock-shell">
@@ -234,11 +258,12 @@ export function AnalysisDock({
             </label>
           ) : null}
           {binarySummary && tab !== 'disassembly' ? <label className="function-picker"><Binary size={13} /><span>Function</span><select value={binarySummary.rootAddress} onChange={(event: ChangeEvent<HTMLSelectElement>) => selectFunction(Number(event.currentTarget.value))}>{functions.map((fn) => <option key={`${fn.address}:${fn.name}`} value={fn.address}>{fn.name} · 0x{fn.address.toString(16)}</option>)}</select></label> : null}
+          {inspectorToggle}
         </div>
       </header>
 
       {tab === 'cfg' ? (
-        <div className={`cfg-view-shell ${!binarySummary || cfgView === 'function' ? 'function-only' : ''}`}>
+        <div className={`cfg-view-shell ${!binarySummary || cfgView === 'function' ? 'function-only' : ''} ${inspectorVisible ? '' : 'inspector-collapsed'}`}>
           {binarySummary && cfgView === 'program' && programFlow ? (
             <ProgramFlowToolbar
               groups={programFlow.groups}
@@ -250,23 +275,23 @@ export function AnalysisDock({
               onScopeChange={setProgramScope}
               onToggleVisibility={toggleGroupVisibility}
               onShowAll={() => setHiddenGroups(new Set())}
-              onHideAll={() => setHiddenGroups(new Set(programFlow.groups.map((group) => group.id)))}
+              onHideAll={() => setHiddenGroups(new Set(programFlow.groups.map((group) => group.id))) }
               onCompactAll={() => setExpandedGroups(new Set())}
             />
           ) : null}
           <div className="analysis-dock analysis-dock-cfg" style={graphColumns}>
             <GraphPanel graph={cfgGraph} title={binarySummary && cfgView === 'program' ? `Program calls · ${binarySummary.programTransfers.length} edges` : graph?.viewKind === 'function-cfg' ? 'Function CFG' : 'Flow graph'} grid={grid} labels={labels} selectedId={selectedId} focusId={executionNodeId} trace={cfgView === 'function' || !binarySummary ? executionTrace : null} onSelect={selectNode} onActivate={activateNode} onClear={onClearGraph} />
-            <ResizeHandle orientation="vertical" onDelta={(delta) => setInspectorWidth((width) => Math.min(520, Math.max(190, width - delta)))} />
-            <InspectorPanel graph={cfgGraph} selectedId={selectedId} stale={analysisStale} onNavigate={onNavigate} />
+            {inspectorVisible ? <ResizeHandle orientation="vertical" onDelta={(delta) => setInspectorWidth((width) => Math.min(520, Math.max(190, width - delta)))} /> : null}
+            {inspectorVisible ? <InspectorPanel graph={cfgGraph} selectedId={selectedId} stale={analysisStale} onNavigate={onNavigate} /> : null}
           </div>
         </div>
       ) : null}
 
       {tab === 'dataflow' ? (
-        <div className="analysis-dock analysis-dock-cfg" style={graphColumns}>
+        <div className={`analysis-dock analysis-dock-cfg ${inspectorVisible ? '' : 'inspector-collapsed'}`} style={graphColumns}>
           <GraphPanel graph={dataflowGraph} title={`Dataflow · ${DATAFLOW_PROJECTIONS.find((item) => item.id === projection)?.label ?? projection}`} grid={grid} labels={labels} selectedId={selectedId} onSelect={selectNode} onActivate={activateNode} onClear={onClearGraph} />
-          <ResizeHandle orientation="vertical" onDelta={(delta) => setInspectorWidth((width) => Math.min(520, Math.max(190, width - delta)))} />
-          <InspectorPanel graph={graphForInspector} selectedId={selectedId} stale={analysisStale} onNavigate={onNavigate} />
+          {inspectorVisible ? <ResizeHandle orientation="vertical" onDelta={(delta) => setInspectorWidth((width) => Math.min(520, Math.max(190, width - delta)))} /> : null}
+          {inspectorVisible ? <InspectorPanel graph={graphForInspector} selectedId={selectedId} stale={analysisStale} onNavigate={onNavigate} /> : null}
         </div>
       ) : null}
 
