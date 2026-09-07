@@ -2,6 +2,7 @@ import type { LoadedImage } from '../binary/model';
 import type { ProjectFile } from '../project/model';
 import {
   DEFAULT_EXECUTION_POLICY,
+  type ExecutionCrashSnapshot,
   type ExecutionEvent,
   type ExecutionInstructionSnapshot,
   type ExecutionPolicy,
@@ -14,6 +15,7 @@ import {
 import { materializeRuntimeDependencyClosure, type MaterializedRuntimeModule, type RuntimeDependencyClosure } from './runtimeDependencies';
 import { describeExecutionError, ExecutionProviderDiagnosticBuffer } from './providerDiagnostics';
 import { validateBlinkBuildProfile } from './blinkBuildProfile';
+import { captureBlinkFatalSignal, describeBlinkFatalSignal } from './blinkCrashDiagnostics';
 import { blinkRuntimeInstructionLine } from './runtimeDisassembly';
 import {
   RuntimeImageResolver,
@@ -182,6 +184,7 @@ export class BlinkProcessSession {
   private stderrValue = '';
   private exitCodeValue: number | null = null;
   private trapReasonValue: string | null = null;
+  private crashValue: ExecutionCrashSnapshot | null = null;
   private eventsValue: ExecutionEvent[] = [];
   private module: BlinkModule | null = null;
   private clstruct = 0;
@@ -290,6 +293,7 @@ export class BlinkProcessSession {
     this.captureEnabled = true;
     this.stdoutValue = '';
     this.stderrValue = '';
+    this.crashValue = null;
     this.statusValue = 'ready';
     appendEvent(this.eventsValue, {
       kind: 'prepared',
@@ -353,7 +357,13 @@ export class BlinkProcessSession {
       const exitCode = 128 + signal;
       this.statusValue = 'trapped';
       this.exitCodeValue = exitCode;
-      this.trapReasonValue = `Blink guest terminated by Linux signal ${signal} (exit ${exitCode}).`;
+      let registers: ExecutionRegisterSnapshot | null = null;
+      try { registers = this.readRegisters(); }
+      catch (error: unknown) {
+        this.providerDiagnostics.add('error', `Fatal-signal register capture failed: ${describeExecutionError(error)}`);
+      }
+      this.crashValue = captureBlinkFatalSignal(this.file, this.image, signal, code, registers);
+      this.trapReasonValue = describeBlinkFatalSignal(this.crashValue);
       appendEvent(this.eventsValue, { kind: 'trap', reason: this.trapReasonValue });
       return;
     }
@@ -378,15 +388,17 @@ export class BlinkProcessSession {
     this.statusValue = 'exited';
     this.exitCodeValue = code;
     this.trapReasonValue = null;
+    this.crashValue = null;
     appendEvent(this.eventsValue, { kind: 'exit', code });
   }
 
   private readRegisters(): ExecutionRegisterSnapshot | null {
     const module = this.module;
-    // run_fast deliberately disables Blink's debugger and therefore does not
-    // refresh clstruct register pointers. Returning the previous debug snapshot
-    // here would be stale and actively misleading.
-    if (!module || !this.clstruct || this.processMode === 'headless-run') return null;
+    // The vendored wrapper is patched to refresh lightweight architectural
+    // register pointers on every signal/preemption even when run_fast keeps the
+    // internal debugger/disassembler disabled. The build profile validates this
+    // contract before the module is imported, so headless snapshots are fresh.
+    if (!module || !this.clstruct) return null;
     const view = new DataView(module.wasmExports.memory.buffer);
     const valueAt = (index: number): number => view.getUint32(this.clstruct + index * 4, true);
     if (valueAt(CL.version) !== 1) throw new Error(`Blink clstruct version ${valueAt(CL.version)} is incompatible with provider version 1.`);
@@ -525,6 +537,7 @@ export class BlinkProcessSession {
   markRunning(): void {
     if (this.statusValue === 'ready' || this.statusValue === 'paused') {
       this.trapReasonValue = null;
+      this.crashValue = null;
       this.statusValue = 'running';
     }
   }
@@ -537,6 +550,7 @@ export class BlinkProcessSession {
   step(): ExecutionSnapshot {
     if (!this.module || terminal(this.statusValue)) return this.snapshot();
     this.trapReasonValue = null;
+    this.crashValue = null;
     this.fakeTtyPaused = false;
     if (this.processMode === 'headless-run') {
       this.statusValue = 'trapped';
@@ -583,7 +597,7 @@ export class BlinkProcessSession {
         this.processMode = 'headless-run';
         appendEvent(this.eventsValue, {
           kind: 'prepared',
-          message: 'Blink headless process execution started. Internal Blink disassembly is disabled; analyzer/Capstone remains authoritative for code inspection.'
+          message: 'Blink headless process execution started. Internal Blink disassembly is disabled; lightweight signal/preemption register capture remains enabled and analyzer/Capstone stays authoritative for code inspection.'
         });
         this.module._blinkenlib_run_fast();
       } else {
@@ -621,6 +635,7 @@ export class BlinkProcessSession {
       stderr: this.stderrValue,
       exitCode: this.exitCodeValue,
       trapReason: this.trapReasonValue,
+      crash: this.crashValue,
       providerDiagnostics: this.providerDiagnostics.snapshot(),
       events: this.eventsValue.slice()
     };
