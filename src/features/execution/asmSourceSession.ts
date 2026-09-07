@@ -526,6 +526,7 @@ export class AsmSourceExecutionSession {
       instructionCount: this.instructionCountValue,
       registers: this.registers.snapshot(),
       lastInstruction: this.lastInstructionValue,
+      runtimeDisassembly: null,
       stdout: this.stdoutValue,
       stderr: this.stderrValue,
       exitCode: this.exitCodeValue,

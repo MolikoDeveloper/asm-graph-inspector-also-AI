@@ -550,6 +550,7 @@ export function App() {
               fontSize={settings.fontSize}
               compactTabs={settings.compactTabs}
               revealTarget={revealTarget}
+              executionSnapshot={execution.snapshot}
               problemsByFile={problemsByFile}
               onActivateGroup={(groupId) => dispatch({ type: 'activate-group', groupId })}
               onActivateFile={(groupId, fileId) => dispatch({ type: 'activate-file', groupId, fileId })}

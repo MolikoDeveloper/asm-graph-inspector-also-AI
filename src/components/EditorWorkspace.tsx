@@ -2,16 +2,18 @@ import { Columns2, FileQuestion, X } from 'lucide-react';
 import type { InspectorProject, ProjectFile } from '../features/project/model';
 import type { EditorGroupState, EditorRevealTarget } from '../features/workspace/model';
 import type { AssemblyProblem } from '../features/analysis/asmParser';
+import type { ExecutionSnapshot } from '../features/execution/model';
 import { EmptyState, IconButton } from './ui';
 import { SourceEditor } from './SourceEditor';
 
-function EditorGroup({ group, filesById, active, fontSize, compactTabs, revealTarget, problemsByFile, onActivateGroup, onActivateFile, onCloseTab, onCloseGroup, onChangeText, onSplit }: {
+function EditorGroup({ group, filesById, active, fontSize, compactTabs, revealTarget, executionSnapshot, problemsByFile, onActivateGroup, onActivateFile, onCloseTab, onCloseGroup, onChangeText, onSplit }: {
   group: EditorGroupState;
   filesById: Map<string, ProjectFile>;
   active: boolean;
   fontSize: number;
   compactTabs: boolean;
   revealTarget: EditorRevealTarget | null;
+  executionSnapshot: ExecutionSnapshot;
   problemsByFile: Map<string, AssemblyProblem[]>;
   onActivateGroup(): void;
   onActivateFile(fileId: string): void;
@@ -39,19 +41,20 @@ function EditorGroup({ group, filesById, active, fontSize, compactTabs, revealTa
         <div className="editor-group-actions"><IconButton title="Split editor right" aria-label="Split editor right" onClick={onSplit}><Columns2 size={15} /></IconButton>{onCloseGroup ? <IconButton title="Close editor group" aria-label="Close editor group" onClick={onCloseGroup}><X size={15} /></IconButton> : null}</div>
       </div>
       <div className="editor-surface">
-        {activeFile ? <SourceEditor file={activeFile} fontSize={fontSize} revealTarget={revealTarget?.fileId === activeFile.id ? revealTarget : null} problems={problemsByFile.get(activeFile.id) ?? []} onChange={(text) => onChangeText(activeFile.id, text)} onFocus={onActivateGroup} /> : <EmptyState icon={<FileQuestion size={28} />} title="No file open" body="Open a file from the Explorer or File menu." />}
+        {activeFile ? <SourceEditor file={activeFile} fontSize={fontSize} revealTarget={revealTarget?.fileId === activeFile.id ? revealTarget : null} executionSnapshot={executionSnapshot} problems={problemsByFile.get(activeFile.id) ?? []} onChange={(text) => onChangeText(activeFile.id, text)} onFocus={onActivateGroup} /> : <EmptyState icon={<FileQuestion size={28} />} title="No file open" body="Open a file from the Explorer or File menu." />}
       </div>
     </section>
   );
 }
 
-export function EditorWorkspace({ project, groups, activeGroupId, fontSize, compactTabs, revealTarget, problemsByFile, onActivateGroup, onActivateFile, onCloseTab, onCloseGroup, onChangeText, onSplit }: {
+export function EditorWorkspace({ project, groups, activeGroupId, fontSize, compactTabs, revealTarget, executionSnapshot, problemsByFile, onActivateGroup, onActivateFile, onCloseTab, onCloseGroup, onChangeText, onSplit }: {
   project: InspectorProject;
   groups: EditorGroupState[];
   activeGroupId: string;
   fontSize: number;
   compactTabs: boolean;
   revealTarget: EditorRevealTarget | null;
+  executionSnapshot: ExecutionSnapshot;
   problemsByFile: Map<string, AssemblyProblem[]>;
   onActivateGroup(groupId: string): void;
   onActivateFile(groupId: string, fileId: string): void;
@@ -72,6 +75,7 @@ export function EditorWorkspace({ project, groups, activeGroupId, fontSize, comp
           fontSize={fontSize}
           compactTabs={compactTabs}
           revealTarget={revealTarget}
+          executionSnapshot={executionSnapshot}
           problemsByFile={problemsByFile}
           onActivateGroup={() => onActivateGroup(group.id)}
           onActivateFile={(fileId) => onActivateFile(group.id, fileId)}

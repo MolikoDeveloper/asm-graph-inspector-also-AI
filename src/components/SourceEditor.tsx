@@ -4,6 +4,8 @@ import type { EditorRevealTarget } from '../features/workspace/model';
 import type { AssemblyProblem } from '../features/analysis/asmParser';
 import { inspectElfHeader } from '../features/binary/elfParser';
 import { loadFullBinaryDisassembly, type BinaryDisassemblyDocument } from '../features/analysis/binaryDisassembly';
+import type { ExecutionSnapshot } from '../features/execution/model';
+import { blinkDisassemblyLineText, blinkRuntimeCursorLine } from '../features/execution/runtimeDisassembly';
 import { HighlightedAssemblyLine } from './AssemblySyntax';
 
 function hexPreview(bytes: ArrayBuffer | undefined, max = 64 * 1024): string {
@@ -34,10 +36,11 @@ function findAddressIndex(document: BinaryDisassemblyDocument, address: number):
   return best;
 }
 
-function BinaryDisassemblyEditor({ file, fontSize, revealTarget, onFocus }: {
+function BinaryDisassemblyEditor({ file, fontSize, revealTarget, executionSnapshot, onFocus }: {
   file: ProjectFile;
   fontSize: number;
   revealTarget: EditorRevealTarget | null;
+  executionSnapshot: ExecutionSnapshot;
   onFocus(): void;
 }) {
   const [mode, setMode] = useState<'disassembly' | 'hex'>('disassembly');
@@ -47,8 +50,17 @@ function BinaryDisassemblyEditor({ file, fontSize, revealTarget, onFocus }: {
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(600);
   const scrollRef = useRef<HTMLDivElement>(null);
+  const runtimeScrollRef = useRef<HTMLDivElement>(null);
   const binaryHeader = useMemo(() => inspectElfHeader(file.bytes), [file.bytes]);
   const rowHeight = Math.max(19, Math.round(fontSize * 1.65));
+  const runtimeDisassembly = executionSnapshot.targetFileId === file.id
+    && executionSnapshot.provider === 'blink-process'
+    && executionSnapshot.status === 'paused'
+    ? executionSnapshot.runtimeDisassembly
+    : null;
+  const runtimeCursorLine = runtimeDisassembly
+    ? blinkRuntimeCursorLine(runtimeDisassembly.lines, executionSnapshot.registers?.rip, runtimeDisassembly.currentLine)
+    : -1;
 
   useEffect(() => {
     let cancelled = false;
@@ -82,6 +94,13 @@ function BinaryDisassemblyEditor({ file, fontSize, revealTarget, onFocus }: {
     setMode('disassembly');
   }, [document, file.id, revealTarget?.nonce, revealTarget?.address, revealTarget?.fileId, rowHeight]);
 
+  useEffect(() => {
+    if (!runtimeDisassembly || !runtimeScrollRef.current) return;
+    setMode('disassembly');
+    const targetTop = Math.max(0, runtimeCursorLine * rowHeight - runtimeScrollRef.current.clientHeight * 0.36);
+    runtimeScrollRef.current.scrollTop = targetTop;
+  }, [runtimeDisassembly, runtimeCursorLine, rowHeight]);
+
   const start = document ? Math.max(0, Math.floor(scrollTop / rowHeight) - 24) : 0;
   const visibleCount = Math.ceil(viewportHeight / rowHeight) + 48;
   const end = document ? Math.min(document.lines.length, start + visibleCount) : 0;
@@ -95,7 +114,29 @@ function BinaryDisassemblyEditor({ file, fontSize, revealTarget, onFocus }: {
         {binaryHeader?.valid ? <><span>{binaryHeader.kind}</span><span>{binaryHeader.architecture}</span><span>entry {binaryHeader.entry !== undefined ? `0x${binaryHeader.entry.toString(16)}` : '—'}</span></> : <span>binary</span>}
         <div className="binary-editor-modes"><button className={mode === 'disassembly' ? 'active' : ''} onClick={() => setMode('disassembly')}>Disassembly</button><button className={mode === 'hex' ? 'active' : ''} onClick={() => setMode('hex')}>Hex</button></div>
       </div>
-      {mode === 'hex' ? <pre className="binary-hex-view">{hexPreview(file.bytes)}</pre> : (
+      {mode === 'hex' ? <pre className="binary-hex-view">{hexPreview(file.bytes)}</pre> : runtimeDisassembly ? (
+        <div className="runtime-disassembly-surface">
+          <div className="runtime-disassembly-meta">
+            <strong>Live process</strong>
+            <span>Blink debugger</span>
+            <span>RIP {executionSnapshot.registers ? `0x${executionSnapshot.registers.rip.toString(16)}` : '—'}</span>
+            <span>step {executionSnapshot.instructionCount.toLocaleString()}</span>
+            <small>Runtime view only · static Capstone analysis is unchanged.</small>
+          </div>
+          <div ref={runtimeScrollRef} className="runtime-disassembly-scroll">
+            {runtimeDisassembly.lines.map((rawLine, index) => (
+              <div
+                key={`${index}:${rawLine}`}
+                className={index === runtimeCursorLine ? 'runtime-disassembly-row current' : 'runtime-disassembly-row'}
+                style={{ minHeight: rowHeight }}
+              >
+                <span className="runtime-disassembly-marker">{index === runtimeCursorLine ? '▶' : ''}</span>
+                <code>{blinkDisassemblyLineText(rawLine)}</code>
+              </div>
+            ))}
+          </div>
+        </div>
+      ) : (
         <div className="disassembly-surface">
           {!document && !error ? <div className="disassembly-loading"><strong>Decoding complete executable ASM…</strong><span>{progress.total ? `${progressPercent}% · ${progress.completed.toLocaleString()} / ${progress.total.toLocaleString()} bytes` : 'Preparing raw ELF + Capstone…'}</span><i><b style={{ width: `${progressPercent}%` }} /></i></div> : null}
           {error ? <div className="disassembly-error"><strong>Disassembly failed</strong><span>{error}</span></div> : null}
@@ -128,12 +169,13 @@ function BinaryDisassemblyEditor({ file, fontSize, revealTarget, onFocus }: {
   );
 }
 
-export function SourceEditor({ file, fontSize, onChange, onFocus, revealTarget, problems = [] }: {
+export function SourceEditor({ file, fontSize, onChange, onFocus, revealTarget, executionSnapshot, problems = [] }: {
   file: ProjectFile;
   fontSize: number;
   onChange(text: string): void;
   onFocus(): void;
   revealTarget: EditorRevealTarget | null;
+  executionSnapshot: ExecutionSnapshot;
   problems?: AssemblyProblem[];
 }) {
   const lineNumbersRef = useRef<HTMLDivElement>(null);
@@ -158,7 +200,7 @@ export function SourceEditor({ file, fontSize, onChange, onFocus, revealTarget, 
     setCursor({ line, column: 1 });
   }, [file.id, file.kind, revealTarget?.nonce, revealTarget?.fileId, revealTarget?.line, lines, fontSize]);
 
-  if (file.kind === 'binary') return <BinaryDisassemblyEditor file={file} fontSize={fontSize} revealTarget={revealTarget} onFocus={onFocus} />;
+  if (file.kind === 'binary') return <BinaryDisassemblyEditor file={file} fontSize={fontSize} revealTarget={revealTarget} executionSnapshot={executionSnapshot} onFocus={onFocus} />;
 
   function updateCursor(target: HTMLTextAreaElement) {
     const before = target.value.slice(0, target.selectionStart);

@@ -16,6 +16,7 @@ const IDLE_SNAPSHOT: ExecutionSnapshot = {
   instructionCount: 0,
   registers: null,
   lastInstruction: null,
+  runtimeDisassembly: null,
   stdout: '',
   stderr: '',
   exitCode: null,

@@ -57,6 +57,17 @@ export interface ExecutionInstructionSnapshot {
   nodeId?: string;
 }
 
+export interface ExecutionRuntimeDisassemblySnapshot {
+  /**
+   * Provider-owned live disassembly around the current process RIP.
+   * This is observational debugger state and must never be folded back into
+   * the canonical Capstone/static analysis graph.
+   */
+  source: 'blink-debugger';
+  lines: string[];
+  currentLine: number;
+}
+
 export type ExecutionEvent =
   | { kind: 'prepared'; message: string }
   | { kind: 'instruction'; address: number; mnemonic: string; operands: string; line?: number; nodeId?: string }
@@ -77,6 +88,7 @@ export interface ExecutionSnapshot {
   instructionCount: number;
   registers: ExecutionRegisterSnapshot | null;
   lastInstruction: ExecutionInstructionSnapshot | null;
+  runtimeDisassembly: ExecutionRuntimeDisassemblySnapshot | null;
   stdout: string;
   stderr: string;
   exitCode: number | null;

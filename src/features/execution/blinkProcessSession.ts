@@ -5,6 +5,7 @@ import {
   type ExecutionEvent,
   type ExecutionPolicy,
   type ExecutionRegisterSnapshot,
+  type ExecutionRuntimeDisassemblySnapshot,
   type ExecutionSnapshot,
   type ExecutionStatus
 } from './model';
@@ -38,7 +39,11 @@ const CL = Object.freeze({
   rax: 22,
   rbx: 23,
   rcx: 24,
-  rdx: 25
+  rdx: 25,
+  disMaxLines: 26,
+  disMaxLineLen: 27,
+  disCurrentLine: 28,
+  disBuffer: 29
 });
 
 export interface BlinkFs {
@@ -361,6 +366,46 @@ export class BlinkProcessSession {
     };
   }
 
+  private readRuntimeDisassembly(): ExecutionRuntimeDisassemblySnapshot | null {
+    const module = this.module;
+    if (!module || !this.clstruct || this.processMode !== 'debug-step') return null;
+    const view = new DataView(module.wasmExports.memory.buffer);
+    const valueAt = (index: number): number => view.getUint32(this.clstruct + index * 4, true);
+    if (valueAt(CL.version) !== 1) return null;
+
+    const maxLines = valueAt(CL.disMaxLines);
+    const maxLineLen = valueAt(CL.disMaxLineLen);
+    const currentLine = valueAt(CL.disCurrentLine);
+    const buffer = valueAt(CL.disBuffer);
+    if (!buffer || maxLines <= 0 || maxLineLen <= 0 || currentLine >= maxLines) return null;
+
+    // The fork exposes a fixed char[lines][line_len] matrix. Copy strings into
+    // the snapshot immediately because Emscripten memory can grow between UI
+    // renders and invalidate any retained DataView/TypedArray references.
+    const heap = new Uint8Array(module.wasmExports.memory.buffer);
+    const lines: string[] = [];
+    let lastNonEmpty = -1;
+    for (let line = 0; line < maxLines; line += 1) {
+      const start = buffer + line * maxLineLen;
+      if (start >= heap.byteLength) break;
+      const limit = Math.min(heap.byteLength, start + maxLineLen);
+      let text = '';
+      for (let cursor = start; cursor < limit; cursor += 1) {
+        const byte = heap[cursor];
+        if (byte === 0) break;
+        text += String.fromCharCode(byte);
+      }
+      lines.push(text);
+      if (text.trim()) lastNonEmpty = line;
+    }
+    if (lastNonEmpty < 0 || currentLine >= lines.length) return null;
+    return {
+      source: 'blink-debugger',
+      lines: lines.slice(0, Math.max(lastNonEmpty + 1, currentLine + 1)),
+      currentLine
+    };
+  }
+
   get status(): ExecutionStatus { return this.statusValue; }
 
   markRunning(): void {
@@ -437,10 +482,15 @@ export class BlinkProcessSession {
 
   snapshot(): ExecutionSnapshot {
     let registers: ExecutionRegisterSnapshot | null = null;
+    let runtimeDisassembly: ExecutionRuntimeDisassemblySnapshot | null = null;
     try { registers = this.readRegisters(); }
     catch (error: unknown) {
       if (!terminal(this.statusValue)) this.trapFromError(error);
       else this.providerDiagnostics.add('error', describeExecutionError(error));
+    }
+    try { runtimeDisassembly = this.readRuntimeDisassembly(); }
+    catch (error: unknown) {
+      this.providerDiagnostics.add('warning', `Blink live disassembly unavailable: ${describeExecutionError(error)}`);
     }
     return {
       status: this.statusValue,
@@ -451,6 +501,7 @@ export class BlinkProcessSession {
       instructionCount: this.instructionCountValue,
       registers,
       lastInstruction: this.lastInstructionValue,
+      runtimeDisassembly,
       stdout: this.stdoutValue,
       stderr: this.stderrValue,
       exitCode: this.exitCodeValue,

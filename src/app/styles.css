@@ -441,6 +441,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .disassembly-code { color: #cbd7e1; }
 .disassembly-symbol { color: #68be96; }
 .disassembly-section { color: #526779; font-size: .84em; }
+.runtime-disassembly-surface { min-height: 0; min-width: 0; display: grid; grid-template-rows: auto minmax(0,1fr); background: #090e13; }
+.runtime-disassembly-meta { min-height: 29px; display: flex; align-items: center; gap: 12px; padding: 0 10px; border-bottom: 1px solid #20303c; background: #0b151c; color: #6f8799; font-size: 9px; white-space: nowrap; overflow: hidden; }
+.runtime-disassembly-meta strong { color: #7fc5ee; font-weight: 600; }
+.runtime-disassembly-meta small { margin-left: auto; color: #526a7c; font-size: 8px; }
+.runtime-disassembly-scroll { min-height: 0; min-width: 0; overflow: auto; background: #090e13; }
+.runtime-disassembly-row { min-width: 760px; display: grid; grid-template-columns: 28px minmax(0,1fr); align-items: center; border-bottom: 1px solid rgba(28,39,49,.48); color: #9fb1bf; font-size: var(--editor-font-size); }
+.runtime-disassembly-row.current { background: #183247; box-shadow: inset 3px 0 #54b4f2; color: #dbe8f1; }
+.runtime-disassembly-marker { padding-left: 9px; color: #6fc4f3; font-size: .9em; }
+.runtime-disassembly-row code { min-width: 0; padding: 0 8px; overflow: hidden; text-overflow: ellipsis; white-space: pre; color: inherit; }
 
 .bottom-tab-badge { min-width: 17px; height: 17px; display: inline-grid; place-items: center; border-radius: 9px; padding: 0 4px; background: #5f2329; color: #f6bec2; font-size: 9px; }
 .problems-list { min-height: 0; overflow: auto; padding: 5px 8px; }
