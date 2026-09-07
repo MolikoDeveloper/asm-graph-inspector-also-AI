@@ -1,14 +1,13 @@
-import { executableBytesForRange, parseElfImage } from '../binary/elfParser';
+import { inspectElfHeader } from '../binary/elfParser';
 import { loadCapstone } from '../capstone/capstoneLoader';
 import { decodeX86_64 } from '../capstone/capstoneDecoder';
-import type { ProjectFile } from '../project/model';
 import {
-  auditBlinkIsaForFile,
   blinkUnsupportedIsaFamily,
   type BlinkIsaAudit,
   type BlinkIsaEvidence,
   type BlinkUnsupportedIsaFamily
 } from './blinkIsaPreflight';
+import { REQUIRED_BLINK_BUILD_PROFILE } from './blinkBuildProfile';
 import type { MaterializedRuntimeModule, RuntimeDependencyClosure } from './runtimeDependencies';
 
 export type BlinkRuntimeIsaRole = 'interpreter' | 'dependency';
@@ -45,8 +44,20 @@ export interface BlinkRuntimeIsaAudit {
 }
 
 export interface BlinkRuntimeIsaAuditDependencies {
-  auditFile?: (file: ProjectFile) => Promise<BlinkIsaAudit>;
+  auditModule?: (module: MaterializedRuntimeModule) => Promise<BlinkIsaAudit>;
   auditInterpreterEntry?: (module: MaterializedRuntimeModule) => Promise<BlinkIsaEvidence | null>;
+}
+
+interface RuntimeExecutableSegment {
+  index: number;
+  offset: number;
+  virtualAddress: number;
+  fileSize: number;
+}
+
+interface RuntimeElfExecutionLayout {
+  entry: number;
+  segments: RuntimeExecutableSegment[];
 }
 
 function basename(path: string): string {
@@ -62,16 +73,114 @@ function moduleRole(module: MaterializedRuntimeModule, interpreterPath: string |
     : 'dependency';
 }
 
-function moduleProjectFile(module: MaterializedRuntimeModule): ProjectFile {
+function safeNumber(value: bigint, label: string): number {
+  const number = Number(value);
+  if (!Number.isSafeInteger(number) || number < 0) throw new Error(`${label} exceeds the browser-safe integer range.`);
+  return number;
+}
+
+/**
+ * Runtime dependency preparation already parsed DT_NEEDED with a lightweight
+ * program-header path. ISA inventory follows the same rule: do not call the
+ * heavyweight LoadedImage parser (symbols/relocations/unwind/function discovery)
+ * merely to locate executable PT_LOAD bytes in libc/ld.so.
+ */
+function runtimeElfExecutionLayout(bytes: ArrayBuffer): RuntimeElfExecutionLayout {
+  const header = inspectElfHeader(bytes);
+  if (!header.valid) throw new Error(header.reason ?? 'Runtime ISA module is not an ELF file.');
+  if (header.elfClass !== 64 || !header.littleEndian || header.architecture !== 'x86-64') {
+    throw new Error(`Runtime ISA module must be little-endian ELF64 x86-64; got ${header.architecture ?? 'unknown'}.`);
+  }
+  if (bytes.byteLength < 64) throw new Error('Runtime ISA module has a truncated ELF64 header.');
+
+  const view = new DataView(bytes);
+  const phoff = safeNumber(view.getBigUint64(32, true), 'program-header offset');
+  const phentsize = view.getUint16(54, true);
+  const phnum = view.getUint16(56, true);
+  const entry = safeNumber(view.getBigUint64(24, true), 'ELF entry');
+  if (phnum && phentsize < 56) throw new Error(`Unexpected ELF64 program-header size ${phentsize}.`);
+  if (phoff + phentsize * phnum > bytes.byteLength) throw new Error('Runtime ISA program-header table exceeds ELF bytes.');
+
+  const segments: RuntimeExecutableSegment[] = [];
+  for (let index = 0; index < phnum; index += 1) {
+    const offset = phoff + index * phentsize;
+    const type = view.getUint32(offset, true);
+    const flags = view.getUint32(offset + 4, true);
+    if (type !== 1 || (flags & 1) === 0) continue; // PT_LOAD + PF_X
+    const fileOffset = safeNumber(view.getBigUint64(offset + 8, true), `PT_LOAD#${index} file offset`);
+    const virtualAddress = safeNumber(view.getBigUint64(offset + 16, true), `PT_LOAD#${index} virtual address`);
+    const fileSize = safeNumber(view.getBigUint64(offset + 32, true), `PT_LOAD#${index} file size`);
+    if (fileOffset + fileSize > bytes.byteLength) throw new Error(`Executable PT_LOAD#${index} exceeds ELF bytes.`);
+    if (fileSize > 0) segments.push({ index, offset: fileOffset, virtualAddress, fileSize });
+  }
+  segments.sort((left, right) => left.virtualAddress - right.virtualAddress);
+  return { entry, segments };
+}
+
+function nextFrame(): Promise<void> {
+  if (typeof requestAnimationFrame !== 'function') return Promise.resolve();
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+async function auditRuntimeModuleBytes(module: MaterializedRuntimeModule, maxEvidence = 12): Promise<BlinkIsaAudit> {
+  const layout = runtimeElfExecutionLayout(module.bytes);
+  const capstone = await loadCapstone();
+  const families = new Set<BlinkUnsupportedIsaFamily>();
+  const evidence: BlinkIsaEvidence[] = [];
+  const chunkSize = 96 * 1024;
+  let scannedInstructions = 0;
+  let decodedBytes = 0;
+  let skippedBytes = 0;
+  let chunks = 0;
+
+  for (const segment of layout.segments) {
+    let cursor = segment.virtualAddress;
+    const end = segment.virtualAddress + segment.fileSize;
+    while (cursor < end) {
+      const relative = cursor - segment.virtualAddress;
+      const requested = Math.min(chunkSize, end - cursor);
+      const sourceOffset = segment.offset + relative;
+      const bytes = new Uint8Array(module.bytes, sourceOffset, requested);
+      const decoded = decodeX86_64(capstone, bytes, cursor, { maxInstructions: 32768 });
+      if (!decoded.length) {
+        cursor += 1;
+        skippedBytes += 1;
+      } else {
+        for (const instruction of decoded) {
+          if (instruction.address >= end) break;
+          scannedInstructions += 1;
+          const family = blinkUnsupportedIsaFamily({ bytes: instruction.bytes, mnemonic: instruction.mnemonic });
+          if (!family) continue;
+          families.add(family);
+          if (evidence.length < maxEvidence) {
+            evidence.push({
+              family,
+              address: instruction.address,
+              mnemonic: instruction.mnemonic,
+              operands: instruction.operands,
+              bytes: instruction.bytes.slice(),
+              sectionName: `PT_LOAD#${segment.index}`
+            });
+          }
+        }
+        const last = decoded.at(-1)!;
+        const advanced = Math.max(1, Math.min(end, last.endAddress) - cursor);
+        cursor += advanced;
+        decodedBytes += advanced;
+      }
+      chunks += 1;
+      if (chunks % 4 === 0) await nextFrame();
+    }
+  }
+
   return {
-    id: `runtime-isa:${module.sourceId}:${module.fileName}`,
-    path: module.fileName,
-    name: module.fileName,
-    kind: 'binary',
-    language: 'binary',
-    bytes: module.bytes,
-    size: module.bytes.byteLength,
-    updatedAt: 0
+    compatible: families.size === 0,
+    profile: REQUIRED_BLINK_BUILD_PROFILE,
+    scannedInstructions,
+    decodedBytes,
+    skippedBytes,
+    unsupportedFamilies: [...families],
+    evidence
   };
 }
 
@@ -86,30 +195,30 @@ function moduleProjectFile(module: MaterializedRuntimeModule): ProjectFile {
  * execute on the advertised Blink CPU.
  */
 export async function auditBlinkInterpreterEntryIsa(module: MaterializedRuntimeModule): Promise<BlinkIsaEvidence | null> {
-  const file = moduleProjectFile(module);
-  const image = parseElfImage(file.id, file.path, module.bytes);
-  if (!image.entry) return null;
+  const layout = runtimeElfExecutionLayout(module.bytes);
+  if (!layout.entry) return null;
+  const segment = layout.segments.find((candidate) =>
+    layout.entry >= candidate.virtualAddress && layout.entry < candidate.virtualAddress + candidate.fileSize
+  );
+  if (!segment) return null;
 
-  const bytes = executableBytesForRange(image, module.bytes, image.entry, 15);
-  if (!bytes.length) return null;
+  const relative = layout.entry - segment.virtualAddress;
+  const available = Math.min(15, segment.fileSize - relative);
+  if (available <= 0) return null;
+  const bytes = new Uint8Array(module.bytes, segment.offset + relative, available);
   const capstone = await loadCapstone();
-  const instruction = decodeX86_64(capstone, bytes, image.entry, { maxInstructions: 1 })[0];
-  if (!instruction || instruction.address !== image.entry) return null;
+  const instruction = decodeX86_64(capstone, bytes, layout.entry, { maxInstructions: 1 })[0];
+  if (!instruction || instruction.address !== layout.entry) return null;
 
   const family = blinkUnsupportedIsaFamily({ bytes: instruction.bytes, mnemonic: instruction.mnemonic });
   if (!family) return null;
-  const segment = image.segments.find((candidate) =>
-    candidate.executable &&
-    image.entry >= candidate.virtualAddress &&
-    image.entry < candidate.virtualAddress + candidate.fileSize
-  );
   return {
     family,
     address: instruction.address,
     mnemonic: instruction.mnemonic,
     operands: instruction.operands,
     bytes: instruction.bytes.slice(),
-    sectionName: segment ? `PT_LOAD#${segment.index} entry` : 'ELF entry'
+    sectionName: `PT_LOAD#${segment.index} entry`
   };
 }
 
@@ -142,13 +251,13 @@ export async function auditBlinkRuntimeDependencyIsa(
     };
   }
 
-  const auditFile = dependencies.auditFile ?? ((file: ProjectFile) => auditBlinkIsaForFile(file, { maxEvidence: 12 }));
+  const auditModule = dependencies.auditModule ?? auditRuntimeModuleBytes;
   const auditInterpreterEntry = dependencies.auditInterpreterEntry ?? auditBlinkInterpreterEntryIsa;
   const modules: BlinkRuntimeModuleIsaAudit[] = [];
 
   for (const module of closure.modules) {
     const role = moduleRole(module, closure.interpreterPath);
-    const audit = await auditFile(moduleProjectFile(module));
+    const audit = await auditModule(module);
     const blockingEvidence = role === 'interpreter'
       ? await auditInterpreterEntry(module)
       : null;
