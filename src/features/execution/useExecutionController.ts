@@ -12,6 +12,7 @@ import {
 import { publishBlinkIsaPreflight } from './blinkIsaPreflightMonitor';
 import { executionSupport, X86ExecutionSession } from './session';
 import { registerActiveExecutionInputSink } from './activeInput';
+import { registerActiveExecutionProbeSink } from './activeProbe';
 import { appendExecutionStdin } from './stdinQueue';
 
 type BrowserExecutionSession = X86ExecutionSession | AsmSourceExecutionSession | BlinkProcessSession;
@@ -66,6 +67,7 @@ export function useExecutionController() {
   const [snapshot, setSnapshot] = useState<ExecutionSnapshot>(IDLE_SNAPSHOT);
   const [preflight, setPreflight] = useState<BlinkIsaPreflightState>(() => idleBlinkIsaPreflight());
   const sessionRef = useRef<BrowserExecutionSession | null>(null);
+  const lastTargetRef = useRef<ExecutionTarget | null>(null);
   const runGeneration = useRef(0);
 
   useEffect(() => {
@@ -85,6 +87,7 @@ export function useExecutionController() {
     force = false,
     allowIncompatibleIsa = false
   ): Promise<BrowserExecutionSession | null> => {
+    lastTargetRef.current = target;
     const current = sessionRef.current;
     if (!force && current && sameTarget(current, target)) return current;
     const generation = ++runGeneration.current;
@@ -231,6 +234,13 @@ export function useExecutionController() {
     await driveRun(session);
   }, [createSession, driveRun]);
 
+  useEffect(() => registerActiveExecutionProbeSink(() => {
+    const target = lastTargetRef.current;
+    if (!target) return false;
+    void probe(target);
+    return true;
+  }), [probe]);
+
   const pause = useCallback(() => {
     runGeneration.current += 1;
     const session = sessionRef.current;
@@ -247,6 +257,7 @@ export function useExecutionController() {
     runGeneration.current += 1;
     sessionRef.current?.dispose();
     sessionRef.current = null;
+    lastTargetRef.current = null;
     setSnapshot(IDLE_SNAPSHOT);
     setPreflight(idleBlinkIsaPreflight());
   }, []);
