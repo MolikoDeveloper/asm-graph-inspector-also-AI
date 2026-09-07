@@ -9,6 +9,7 @@ import {
   idleBlinkIsaPreflight,
   type BlinkIsaPreflightState
 } from './blinkIsaPreflight';
+import { publishBlinkIsaPreflight } from './blinkIsaPreflightMonitor';
 import { executionSupport, X86ExecutionSession } from './session';
 import { registerActiveExecutionInputSink } from './activeInput';
 import { appendExecutionStdin } from './stdinQueue';
@@ -65,6 +66,10 @@ export function useExecutionController() {
   const [preflight, setPreflight] = useState<BlinkIsaPreflightState>(() => idleBlinkIsaPreflight());
   const sessionRef = useRef<BrowserExecutionSession | null>(null);
   const runGeneration = useRef(0);
+
+  useEffect(() => {
+    publishBlinkIsaPreflight(preflight);
+  }, [preflight]);
 
   useEffect(() => registerActiveExecutionInputSink((text) => {
     const session = sessionRef.current;
