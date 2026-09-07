@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Boxes, Crosshair, GitBranch, Minus, Plus, RotateCcw, Trash2 } from 'lucide-react';
 import type { AnalysisGraph, GraphEdge, GraphNode } from '../features/analysis/model';
+import { isLoopLikeEdge, routeGraphEdge } from '../features/analysis/edgeRouting';
 import { projectGraphSelection } from '../features/analysis/graphSelection';
 import { layoutGraph, type PositionedGraphNode } from '../features/analysis/layout';
 import type { ExecutionTraceProjection } from '../features/execution/follow';
@@ -340,12 +341,6 @@ function highlightedEdgeColor(trueBranch: boolean, falseBranch: boolean, edge: G
   return '#5bc2ff';
 }
 
-function isLoopEdge(graph: AnalysisGraph, edge: GraphEdge, from: PositionedGraphNode, to: PositionedGraphNode): boolean {
-  if (edge.loopBack) return true;
-  if (graph.viewKind !== 'function-cfg') return false;
-  return to.y <= from.y || (to.address !== undefined && from.address !== undefined && to.address <= from.address && edge.kind === 'branch');
-}
-
 function drawMiniMap(
   ctx: CanvasRenderingContext2D,
   width: number,
@@ -446,7 +441,7 @@ export function GraphPanel({
     for (const edge of graph.edges) {
       const from = nodeById.get(edge.from);
       const to = nodeById.get(edge.to);
-      if (!from || !to || !isLoopEdge(graph, edge, from, to)) continue;
+      if (!from || !to || !isLoopLikeEdge(graph, edge, from, to)) continue;
       result.set(edge.id, lane);
       lane += 1;
     }
@@ -482,6 +477,8 @@ export function GraphPanel({
     ctx.save();
     ctx.translate(viewport.x, viewport.y);
     ctx.scale(viewport.zoom, viewport.zoom);
+    ctx.lineCap = 'round';
+    ctx.lineJoin = 'round';
 
     if (grid) {
       ctx.strokeStyle = structural ? '#111f29' : '#14202a';
@@ -501,9 +498,17 @@ export function GraphPanel({
       const from = nodeById.get(edge.from);
       const to = nodeById.get(edge.to);
       if (!from || !to) return;
-      const loopLane = loopLaneById.get(edge.id);
-      const loop = loopLane !== undefined;
-      const horizontalDataEdge = !structural && !loop && edge.kind === 'data' && Math.abs((to.x + to.width / 2) - (from.x + from.width / 2)) > 100;
+      const route = routeGraphEdge({
+        graph,
+        edge,
+        from,
+        to,
+        nodes: positioned,
+        bounds: positionedBounds,
+        loopLane: loopLaneById.get(edge.id),
+        structural
+      });
+      const loop = route.loop;
       const traceCount = trace?.edgeCounts.get(edge.id) ?? 0;
       const conditional = !structural && conditionalSource(graph, edge.from);
       const trueBranch = conditional && edge.kind === 'branch';
@@ -517,85 +522,33 @@ export function GraphPanel({
       ctx.lineWidth = traceCount ? 3.2 : selectedPath ? 2.7 : structural ? 1.35 : edge.kind === 'control' ? 1.5 : 1.8;
       ctx.beginPath();
 
-      let labelX = 0;
-      let labelY = 0;
-      let arrowX = 0;
-      let arrowY = 0;
-      let arrowDx = 0;
-      let arrowDy = 1;
-
-      if (loop && positionedBounds) {
-        const leftDistance = Math.min(from.x, to.x) - positionedBounds.minX;
-        const rightDistance = positionedBounds.maxX - Math.max(from.x + from.width, to.x + to.width);
-        const useLeft = leftDistance <= rightDistance;
-        const laneOffset = 38 + loopLane * 24;
-        const laneX = useLeft ? positionedBounds.minX - laneOffset : positionedBounds.maxX + laneOffset;
-        const startX = useLeft ? from.x : from.x + from.width;
-        const startY = from.y + from.height * 0.58;
-        const endX = useLeft ? to.x : to.x + to.width;
-        const endY = to.y + Math.min(to.height - 18, Math.max(24, to.height * 0.5));
-        ctx.moveTo(startX, startY);
-        ctx.lineTo(laneX, startY);
-        ctx.lineTo(laneX, endY);
-        ctx.lineTo(endX, endY);
-        labelX = laneX + (useLeft ? -6 : 6);
-        labelY = (startY + endY) * 0.5;
-        arrowX = endX;
-        arrowY = endY;
-        arrowDx = useLeft ? 1 : -1;
-        arrowDy = 0;
-      } else if (horizontalDataEdge) {
-        const startX = to.x >= from.x ? from.x + from.width : from.x;
-        const startY = from.y + from.height / 2;
-        const endX = to.x >= from.x ? to.x : to.x + to.width;
-        const endY = to.y + to.height / 2;
-        const midX = (startX + endX) / 2;
-        ctx.moveTo(startX, startY);
-        ctx.bezierCurveTo(midX, startY, midX, endY, endX, endY);
-        labelX = midX + 7;
-        labelY = (startY + endY) / 2 - 5;
-        arrowX = endX;
-        arrowY = endY;
-        arrowDx = endX - midX;
-        arrowDy = endY - startY;
-      } else {
-        const startX = from.x + from.width / 2;
-        const startY = from.y + from.height;
-        const endX = to.x + to.width / 2;
-        const endY = to.y;
-        const direction = endX === startX ? 0 : Math.sign(endX - startX);
-        const horizontalPull = Math.min(structural ? 64 : 92, Math.abs(endX - startX) * 0.36) * direction;
-        const verticalDistance = endY - startY;
-        const midY = startY + (verticalDistance >= 0 ? Math.max(24, verticalDistance * 0.48) : verticalDistance * 0.5);
-        ctx.moveTo(startX, startY);
-        ctx.bezierCurveTo(startX + horizontalPull, midY, endX - horizontalPull, midY, endX, endY);
-        labelX = (startX + endX) / 2;
-        labelY = midY - 8;
-        arrowX = endX;
-        arrowY = endY;
-        arrowDx = horizontalPull || endX - startX;
-        arrowDy = endY - midY;
-      }
-
+      const [first, ...rest] = route.points;
+      if (!first) return;
+      ctx.moveTo(first.x, first.y);
+      for (const point of rest) ctx.lineTo(point.x, point.y);
       ctx.stroke();
-      drawArrowHead(ctx, arrowX, arrowY, arrowDx, arrowDy, selectedPath || traceCount ? 9 : 8);
+
+      const arrow = route.points.at(-1)!;
+      drawArrowHead(ctx, arrow.x, arrow.y, route.arrowDx, route.arrowDy, selectedPath || traceCount ? 9 : 8);
 
       if (labels && edge.label && !dimmed) {
         const loopSuffix = loop ? ' · loop' : '';
+        const labelX = route.label.x;
+        const labelY = route.label.y;
         if (trueBranch) drawPill(ctx, `T · ${edge.label}${loopSuffix}`, labelX, labelY, '#0f3023', '#66e1a1', '#247a52');
         else if (falseBranch) drawPill(ctx, `F · fallthrough${loopSuffix}`, labelX, labelY, '#34171a', '#ff9196', '#874149');
         else {
           ctx.font = `${structural ? 9 : 10}px ui-monospace, SFMono-Regular, Menlo, monospace`;
           ctx.fillStyle = traceCount ? '#83d4ff' : selectedPath ? '#8fd7ff' : structural ? '#607b90' : '#73889a';
           const text = `${edge.label}${loopSuffix}`;
-          ctx.fillText(text, labelX + (loop ? (labelX < from.x ? -ctx.measureText(text).width - 7 : 7) : 7), labelY - 1);
+          ctx.fillText(text, labelX + 7, labelY - 5);
         }
       }
       ctx.globalAlpha = 1;
     };
 
-    // Normal edges remain behind nodes. Loop/back-edges are rendered after nodes on dedicated outer lanes,
-    // so a cycle can never disappear underneath unrelated blocks.
+    // Normal edges remain behind nodes. Semantic loop/back-edges are rendered after nodes on
+    // dedicated obstacle-aware outer lanes so cycles stay visible without crossing sibling cards.
     for (const edge of graph.edges) if (!loopLaneById.has(edge.id)) drawEdge(edge);
 
     for (const node of positioned) {
