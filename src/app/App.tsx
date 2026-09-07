@@ -11,9 +11,10 @@ import { useProjectController } from '../features/project/useProjectController';
 import { useGlobalDependencies } from '../features/dependencies/useGlobalDependencies';
 import { executionSupportForTarget, useExecutionController } from '../features/execution/useExecutionController';
 import { executionAddressFromSnapshot, findBinaryFunctionForAddress, graphNodeForAddress, imageContainsExecutableAddress, projectExecutionTrace } from '../features/execution/follow';
-import type { ExecutionTarget } from '../features/execution/model';
+import type { ExecutionSupport, ExecutionTarget } from '../features/execution/model';
 import type { ProjectFile } from '../features/project/model';
 import type { AssemblerBackend } from '../features/toolchain/model';
+import { ensureAssemblyExecutable } from '../features/toolchain/assemblyExecutionArtifact';
 import { buildAssemblyProject } from '../features/toolchain/projectAssemblyBuild';
 import { createPinnedNasmLdAssemblerBackend } from '../features/toolchain/pinnedNasmLdToolchain';
 import { initialWorkspaceState, type EditorRevealTarget } from '../features/workspace/model';
@@ -76,10 +77,19 @@ export function App() {
   const activeAsmBuildable = activeFile?.kind === 'text' && activeFile.language === 'asm';
   const executionTarget = useMemo<ExecutionTarget | null>(() => {
     if (activeFile?.kind === 'binary' && activeBinarySummary) return { kind: 'binary', file: activeFile, image: activeBinarySummary.image };
-    if (activeFile?.kind === 'text' && activeFile.language === 'asm') return { kind: 'asm-source', file: activeFile, source: activeFile.text ?? '' };
     return null;
   }, [activeFile, activeBinarySummary]);
-  const activeExecutionSupport = useMemo(() => executionTarget ? executionSupportForTarget(executionTarget) : null, [executionTarget]);
+  const activeExecutionSupport = useMemo<ExecutionSupport | null>(() => {
+    if (activeAsmBuildable) {
+      return {
+        supported: true,
+        provider: null,
+        reasons: [],
+        notes: ['ASM Run/Step assembles the source with pinned NASM + GNU ld, opens the generated ELF, then executes the real binary. The legacy source-semantic interpreter is not used by the normal UI path.']
+      };
+    }
+    return executionTarget ? executionSupportForTarget(executionTarget) : null;
+  }, [activeAsmBuildable, executionTarget]);
   const executionAddress = useMemo(() => executionAddressFromSnapshot(execution.snapshot), [execution.snapshot]);
   const executionTrace = useMemo(() => projectExecutionTrace(activeGraph, execution.snapshot), [activeGraph, execution.snapshot]);
 
@@ -262,6 +272,7 @@ export function App() {
   }, [activeBinarySummary, activeFile, activeGraph, execution.snapshot.targetFileId, executionAddress, reveal, runBinaryAnalysis]);
 
   useEffect(() => {
+    // Legacy-only source-semantic follow path. Normal UI Run/Step compiles ASM to ELF first.
     if (!activeFile || activeFile.kind !== 'text' || activeFile.language !== 'asm') return;
     if (execution.snapshot.targetFileId !== activeFile.id) return;
     if (execution.snapshot.status !== 'paused') return;
@@ -396,6 +407,63 @@ export function App() {
     void runBinaryAnalysis(activeFile, address, false);
   }, [activeFile, runBinaryAnalysis]);
 
+  const analyzeGeneratedBinary = useCallback(async (generated: ProjectFile, announceDiagnostics: boolean): Promise<ExecutionTarget> => {
+    setCapstoneStatus('loading');
+    const analyzed = await analyzeBinary(generated);
+    setCapstoneStatus('ready');
+    commitGraph(generated.id, analyzed.graph);
+    setBinarySummaries((current) => {
+      const next = new Map(current);
+      next.set(generated.id, analyzed.summary);
+      return next;
+    });
+    if (announceDiagnostics) for (const diagnostic of analyzed.graph.diagnostics) log(diagnostic, 'muted');
+    return { kind: 'binary', file: generated, image: analyzed.summary.image };
+  }, [commitGraph, log]);
+
+  const prepareActiveAsmBinary = useCallback(async (): Promise<{ target: ExecutionTarget; rebuilt: boolean } | null> => {
+    if (!project || activeFile?.kind !== 'text' || activeFile.language !== 'asm') {
+      log('ASM execution requires an active ASM source file.', 'error');
+      return null;
+    }
+    if (assemblyBusy) return null;
+
+    setAssemblyBusy(true);
+    try {
+      const backend = await getAssemblyBackend();
+      log(`Preparing real ELF for ${activeFile.path}…`);
+      const ensured = await ensureAssemblyExecutable(project, backend, { sourceFileIds: [activeFile.id] });
+      const generated = ensured.file;
+
+      if (!ensured.reused) {
+        clearBinaryAnalysisCache(generated.id);
+        clearFullDisassemblyCache(generated.id);
+        projects.addFiles([generated]);
+        for (const diagnostic of ensured.build?.assembly.diagnostics ?? []) {
+          const level: OutputEntry['level'] = diagnostic.severity === 'error' ? 'error' : diagnostic.severity === 'warning' ? 'muted' : 'info';
+          log(`${diagnostic.tool ? `[${diagnostic.tool}] ` : ''}${diagnostic.message}`, level);
+        }
+        if (ensured.build?.assembly.stdout.trim()) log(ensured.build.assembly.stdout.trim(), 'muted');
+        if (ensured.build?.assembly.stderr.trim() && !ensured.build.assembly.diagnostics.length) log(ensured.build.assembly.stderr.trim(), 'muted');
+      }
+
+      dispatch({ type: 'open-file', fileId: generated.id });
+      const target = await analyzeGeneratedBinary(generated, !ensured.reused);
+      if (ensured.reused) {
+        log(`Reusing fresh ${generated.path} for ${activeFile.path}; source revision is unchanged.`, 'muted');
+      } else {
+        log(`Built ${activeFile.path} → ${generated.path}: ${generated.size.toLocaleString()} bytes. Run/Step now uses the real ELF.`, 'success');
+      }
+      return { target, rebuilt: !ensured.reused };
+    } catch (error: unknown) {
+      setCapstoneStatus((current) => current === 'loading' ? 'error' : current);
+      log(`ASM execution build failed: ${error instanceof Error ? error.message : String(error)}`, 'error');
+      return null;
+    } finally {
+      setAssemblyBusy(false);
+    }
+  }, [activeFile, analyzeGeneratedBinary, assemblyBusy, getAssemblyBackend, log, project, projects]);
+
   const buildActiveAssembly = useCallback(async (runAfterBuild = false) => {
     if (!project || activeFile?.kind !== 'text' || activeFile.language !== 'asm') {
       log('Build requires an active ASM source file.', 'error');
@@ -426,20 +494,11 @@ export function App() {
       projects.addFiles([generated]);
       dispatch({ type: 'open-file', fileId: generated.id });
 
-      setCapstoneStatus('loading');
-      const analyzed = await analyzeBinary(generated);
-      setCapstoneStatus('ready');
-      commitGraph(generated.id, analyzed.graph);
-      setBinarySummaries((current) => {
-        const next = new Map(current);
-        next.set(generated.id, analyzed.summary);
-        return next;
-      });
-      for (const diagnostic of analyzed.graph.diagnostics) log(diagnostic, 'muted');
-      log(`Built ${activeFile.path} → ${generated.path}: ${generated.size.toLocaleString()} bytes, ${analyzed.summary.instructions.length} canonical instructions.`, 'success');
+      const target = await analyzeGeneratedBinary(generated, true);
+      const summary = binarySummaries.get(generated.id);
+      log(`Built ${activeFile.path} → ${generated.path}: ${generated.size.toLocaleString()} bytes${summary ? `, ${summary.instructions.length} canonical instructions` : ''}.`, 'success');
 
       if (runAfterBuild) {
-        const target: ExecutionTarget = { kind: 'binary', file: generated, image: analyzed.summary.image };
         const support = executionSupportForTarget(target);
         if (!support.supported) {
           log(`Generated ELF cannot execute: ${support.reasons.join(' ')}`, 'error');
@@ -455,27 +514,51 @@ export function App() {
     } finally {
       setAssemblyBusy(false);
     }
-  }, [activeFile, assemblyBusy, commitGraph, execution, getAssemblyBackend, log, project, projects]);
+  }, [activeFile, analyzeGeneratedBinary, assemblyBusy, binarySummaries, execution, getAssemblyBackend, log, project, projects]);
 
   const prepareExecution = useCallback(async () => {
+    if (activeAsmBuildable) {
+      const prepared = await prepareActiveAsmBinary();
+      if (prepared) await execution.prepare(prepared.target);
+      return;
+    }
     if (!executionTarget) { log('No executable binary or ASM source is active.', 'error'); return; }
     await execution.prepare(executionTarget);
-  }, [execution, executionTarget, log]);
+  }, [activeAsmBuildable, execution, executionTarget, log, prepareActiveAsmBinary]);
 
   const stepExecution = useCallback(async () => {
+    if (activeAsmBuildable) {
+      const prepared = await prepareActiveAsmBinary();
+      if (!prepared) return;
+      if (prepared.rebuilt) await execution.prepare(prepared.target);
+      await execution.step(prepared.target);
+      return;
+    }
     if (!executionTarget) { log('No executable binary or ASM source is active.', 'error'); return; }
     await execution.step(executionTarget);
-  }, [execution, executionTarget, log]);
+  }, [activeAsmBuildable, execution, executionTarget, log, prepareActiveAsmBinary]);
 
   const runExecution = useCallback(async () => {
+    if (activeAsmBuildable) {
+      const prepared = await prepareActiveAsmBinary();
+      if (!prepared) return;
+      if (prepared.rebuilt) await execution.prepare(prepared.target);
+      await execution.run(prepared.target);
+      return;
+    }
     if (!executionTarget) { log('No executable binary or ASM source is active.', 'error'); return; }
     await execution.run(executionTarget);
-  }, [execution, executionTarget, log]);
+  }, [activeAsmBuildable, execution, executionTarget, log, prepareActiveAsmBinary]);
 
   const resetExecution = useCallback(async () => {
+    if (activeAsmBuildable) {
+      const prepared = await prepareActiveAsmBinary();
+      if (prepared) await execution.reset(prepared.target);
+      return;
+    }
     if (!executionTarget) { log('No executable binary or ASM source is active.', 'error'); return; }
     await execution.reset(executionTarget);
-  }, [execution, executionTarget, log]);
+  }, [activeAsmBuildable, execution, executionTarget, log, prepareActiveAsmBinary]);
 
   const exportCurrentProject = useCallback(() => {
     if (!project) return;
@@ -534,11 +617,11 @@ export function App() {
     {
       label: 'Run',
       items: [
-        { label: 'Run Active Program', shortcut: 'F6', action: () => void runExecution(), disabled: !executionTarget || activeExecutionSupport?.supported !== true },
-        { label: 'Step Instruction', shortcut: 'F10', action: () => void stepExecution(), disabled: !executionTarget || activeExecutionSupport?.supported !== true },
+        { label: 'Run Active Program', shortcut: 'F6', action: () => void runExecution(), disabled: assemblyBusy || activeExecutionSupport?.supported !== true },
+        { label: 'Step Instruction', shortcut: 'F10', action: () => void stepExecution(), disabled: assemblyBusy || activeExecutionSupport?.supported !== true },
         { label: 'Pause', action: execution.pause, disabled: execution.snapshot.status !== 'running' },
         { separator: true, label: '' },
-        { label: 'Prepare / Reset', action: () => void resetExecution(), disabled: !executionTarget || activeExecutionSupport?.supported !== true }
+        { label: 'Prepare / Reset', action: () => void resetExecution(), disabled: assemblyBusy || activeExecutionSupport?.supported !== true }
       ]
     },
     {
@@ -549,7 +632,7 @@ export function App() {
       ]
     },
     { label: 'Help', items: [{ label: 'About', action: () => setAboutOpen(true) }] }
-  ], [activeFile, activeAsmBuildable, activeExecutionSupport, assemblyBusy, buildActiveAssembly, execution.pause, execution.snapshot.status, executionTarget, exportCurrentProject, log, openNewFileDialog, projects, resetExecution, runAnalysis, runExecution, stepExecution, workspace.activeGroupId]);
+  ], [activeFile, activeAsmBuildable, activeExecutionSupport, assemblyBusy, buildActiveAssembly, execution.pause, execution.snapshot.status, exportCurrentProject, log, openNewFileDialog, projects, resetExecution, runAnalysis, runExecution, stepExecution, workspace.activeGroupId]);
 
   useEffect(() => {
     folderInputRef.current?.setAttribute('webkitdirectory', '');
@@ -667,7 +750,7 @@ export function App() {
             ) : null}
           </div>
           {workspace.bottomPanelVisible ? <ResizeHandle orientation="horizontal" onDelta={(delta) => dispatch({ type: 'resize-bottom', height: workspace.bottomPanelHeight - delta })} /> : null}
-          {workspace.bottomPanelVisible ? <div className="bottom-panel-shell" style={{ height: workspace.bottomPanelHeight }}><BottomPanel entries={output} problems={activeProblems} onSelectProblem={(problem) => { dispatch({ type: 'open-file', fileId: problem.fileId }); reveal(problem.fileId, { line: problem.line }); }} execution={execution.snapshot} executionSupport={activeExecutionSupport} executionTargetName={executionTarget?.file.name ?? null} onExecutionPrepare={() => void prepareExecution()} onExecutionRun={() => void runExecution()} onExecutionPause={execution.pause} onExecutionStep={() => void stepExecution()} onExecutionReset={() => void resetExecution()} /></div> : null}
+          {workspace.bottomPanelVisible ? <div className="bottom-panel-shell" style={{ height: workspace.bottomPanelHeight }}><BottomPanel entries={output} problems={activeProblems} onSelectProblem={(problem) => { dispatch({ type: 'open-file', fileId: problem.fileId }); reveal(problem.fileId, { line: problem.line }); }} execution={execution.snapshot} executionSupport={activeExecutionSupport} executionTargetName={activeFile?.name ?? null} onExecutionPrepare={() => void prepareExecution()} onExecutionRun={() => void runExecution()} onExecutionPause={execution.pause} onExecutionStep={() => void stepExecution()} onExecutionReset={() => void resetExecution()} /></div> : null}
         </main>
       </div>
       <StatusBar project={project} activeFile={activeFile} saveState={projects.saveState} capstoneStatus={capstoneStatus} nodeCount={activeGraph?.nodes.length ?? 0} />
