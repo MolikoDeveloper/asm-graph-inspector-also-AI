@@ -7,32 +7,120 @@ export interface PositionedGraphNode extends GraphNode {
   height: number;
 }
 
+const CFG_BLOCK_WIDTH = 264;
+const CFG_COLUMN_GAP = 54;
+const CFG_ROW_GAP = 72;
+const CFG_MAX_VISIBLE_INSTRUCTIONS = 6;
+
+function functionCfgBlockHeight(node: GraphNode): number {
+  const count = Math.min(CFG_MAX_VISIBLE_INSTRUCTIONS, node.blockInstructions?.length ?? 0);
+  const overflow = (node.blockInstructions?.length ?? 0) > CFG_MAX_VISIBLE_INSTRUCTIONS;
+  return 42 + count * 17 + (overflow ? 16 : 0) + 12;
+}
+
 function layoutFunctionCfg(graph: AnalysisGraph): PositionedGraphNode[] {
   const blocks = graph.nodes.filter((node) => node.blockInstructions?.length);
   const references = graph.nodes.filter((node) => !node.blockInstructions?.length);
+  if (!blocks.length) return [];
+
+  const blockIds = new Set(blocks.map((node) => node.id));
+  const outgoing = new Map<string, string[]>();
+  const incomingCount = new Map(blocks.map((node) => [node.id, 0] as const));
+
+  for (const edge of graph.edges) {
+    if (!blockIds.has(edge.from) || !blockIds.has(edge.to) || edge.from === edge.to) continue;
+    const list = outgoing.get(edge.from) ?? [];
+    if (!list.includes(edge.to)) list.push(edge.to);
+    outgoing.set(edge.from, list);
+    incomingCount.set(edge.to, (incomingCount.get(edge.to) ?? 0) + 1);
+  }
+
+  const entry = blocks.find((node) => node.address === graph.functionAddress) ?? blocks[0];
+  const roots = blocks.filter((node) => (incomingCount.get(node.id) ?? 0) === 0);
+  if (!roots.some((node) => node.id === entry.id)) roots.unshift(entry);
+
+  const depth = new Map<string, number>();
+  const queue = roots.map((node) => node.id);
+  for (const id of queue) if (!depth.has(id)) depth.set(id, 0);
+
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const from = queue[cursor];
+    const nextDepth = (depth.get(from) ?? 0) + 1;
+    for (const to of outgoing.get(from) ?? []) {
+      if (depth.has(to)) continue; // back/cycle edges do not create new layout layers
+      depth.set(to, nextDepth);
+      queue.push(to);
+    }
+  }
+
+  let orphanDepth = Math.max(0, ...depth.values()) + 1;
+  for (const node of blocks) {
+    if (depth.has(node.id)) continue;
+    depth.set(node.id, orphanDepth);
+    orphanDepth += 1;
+  }
+
+  const byDepth = new Map<number, GraphNode[]>();
+  for (const node of blocks) {
+    const layer = depth.get(node.id) ?? 0;
+    const list = byDepth.get(layer) ?? [];
+    list.push(node);
+    byDepth.set(layer, list);
+  }
+
+  for (const list of byDepth.values()) {
+    list.sort((a, b) => (a.address ?? Number.MAX_SAFE_INTEGER) - (b.address ?? Number.MAX_SAFE_INTEGER));
+  }
+
+  const maxColumns = Math.max(1, ...[...byDepth.values()].map((list) => list.length));
+  const canvasWidth = maxColumns * CFG_BLOCK_WIDTH + Math.max(0, maxColumns - 1) * CFG_COLUMN_GAP;
   const result: PositionedGraphNode[] = [];
-  const blockPosition = new Map<string, { x: number; y: number }>();
-  for (let index = 0; index < blocks.length; index += 1) {
-    const node = blocks[index];
-    const x = 180 + (index % 2 === 1 && graph.edges.some((edge) => edge.to === node.id && edge.kind === 'branch') ? 44 : 0);
-    const y = 48 + index * 92;
-    blockPosition.set(node.id, { x, y });
-    result.push({ ...node, x, y, width: 270, height: 58 });
+  const blockPosition = new Map<string, PositionedGraphNode>();
+  let y = 48;
+
+  for (const layer of [...byDepth.keys()].sort((a, b) => a - b)) {
+    const list = byDepth.get(layer)!;
+    const rowWidth = list.length * CFG_BLOCK_WIDTH + Math.max(0, list.length - 1) * CFG_COLUMN_GAP;
+    const rowX = 64 + (canvasWidth - rowWidth) * 0.5;
+    const rowHeight = Math.max(...list.map(functionCfgBlockHeight));
+
+    for (let index = 0; index < list.length; index += 1) {
+      const node = list[index];
+      const positioned: PositionedGraphNode = {
+        ...node,
+        x: rowX + index * (CFG_BLOCK_WIDTH + CFG_COLUMN_GAP),
+        y,
+        width: CFG_BLOCK_WIDTH,
+        height: functionCfgBlockHeight(node)
+      };
+      result.push(positioned);
+      blockPosition.set(node.id, positioned);
+    }
+    y += rowHeight + CFG_ROW_GAP;
   }
-  const occupiedRows = new Map<number, number>();
-  for (const node of references) {
-    const incoming = graph.edges.find((edge) => edge.to === node.id);
-    const source = incoming ? blockPosition.get(incoming.from) : null;
-    const preferredY = source?.y ?? (48 + result.length * 72);
-    const row = Math.max(0, Math.round((preferredY - 48) / 64));
-    const collision = occupiedRows.get(row) ?? 0;
-    occupiedRows.set(row, collision + 1);
-    result.push({ ...node, x: 520 + collision * 225, y: 48 + row * 64, width: 205, height: 46 });
+
+  if (references.length) {
+    const referenceX = 64 + canvasWidth + 94;
+    const occupiedRows = new Map<number, number>();
+    for (const node of references) {
+      const incoming = graph.edges.find((edge) => edge.to === node.id);
+      const source = incoming ? blockPosition.get(incoming.from) : null;
+      const preferredY = source?.y ?? 48;
+      const row = Math.max(0, Math.round((preferredY - 48) / 58));
+      const collision = occupiedRows.get(row) ?? 0;
+      occupiedRows.set(row, collision + 1);
+      result.push({
+        ...node,
+        x: referenceX + collision * 220,
+        y: 48 + row * 58,
+        width: 196,
+        height: 46
+      });
+    }
   }
+
   return result;
 }
-
-
 
 function layoutProgramFlow(graph: AnalysisGraph): PositionedGraphNode[] {
   const nodes = graph.nodes;
