@@ -82,6 +82,7 @@ export interface ExecutionRuntimeDisassemblySnapshot {
 export type ExecutionEvent =
   | { kind: 'prepared'; message: string }
   | { kind: 'instruction'; address: number; mnemonic: string; operands: string; line?: number; nodeId?: string }
+  | { kind: 'trace-gap'; reason: 'non-program-image' | 'runtime-image-unresolved' }
   | { kind: 'stdout'; text: string }
   | { kind: 'stderr'; text: string }
   | { kind: 'syscall'; number: number; name: string; detail: string }
@@ -107,7 +108,6 @@ export interface ExecutionSnapshot {
   providerDiagnostics: ExecutionProviderDiagnostic[];
   events: ExecutionEvent[];
 }
-
 
 export type ExecutionTarget =
   | { kind: 'binary'; file: ProjectFile; image: LoadedImage }
