@@ -4,13 +4,20 @@ import type { ExecutionSnapshot } from './model';
 
 export function executionAddressFromSnapshot(snapshot: ExecutionSnapshot): number | null {
   if (snapshot.status !== 'paused') return null;
-  if (snapshot.lastInstruction?.address !== undefined) return snapshot.lastInstruction.address;
-  if (snapshot.provider === 'blink-process') {
+
+  // Process backends execute code from several loaded images. Only a RIP proven
+  // to belong to the program may be projected into its static Capstone model.
+  // Known Unicorn load bias is authoritative; Blink uses its observed resolver.
+  if (snapshot.provider === 'blink-process' || snapshot.provider === 'unicorn-linux') {
     const runtimeImage = snapshot.runtimeDisassembly?.image;
-    if (!runtimeImage || runtimeImage.role !== 'program') return null;
-    const imageAddress = Number(runtimeImage.imageAddress);
-    return Number.isSafeInteger(imageAddress) ? imageAddress : null;
+    if (runtimeImage) {
+      if (runtimeImage.role !== 'program') return null;
+      const imageAddress = Number(runtimeImage.imageAddress);
+      return Number.isSafeInteger(imageAddress) ? imageAddress : null;
+    }
   }
+
+  if (snapshot.lastInstruction?.address !== undefined) return snapshot.lastInstruction.address;
   const rip = snapshot.registers?.rip;
   if (rip === null || rip === undefined) return null;
   const value = Number(rip);
@@ -101,8 +108,18 @@ export function projectExecutionTrace(graph: AnalysisGraph | null, snapshot: Exe
 
   let currentNodeId: string | null = null;
   if (snapshot.status === 'paused' || snapshot.status === 'running') {
-    if (snapshot.lastInstruction?.nodeId && graph.nodes.some((node) => node.id === snapshot.lastInstruction!.nodeId)) currentNodeId = snapshot.lastInstruction.nodeId;
-    else if (snapshot.lastInstruction) currentNodeId = graphNodeForAddress(graph, snapshot.lastInstruction.address)?.id ?? null;
+    const runtimeImage = snapshot.runtimeDisassembly?.image;
+    const processOutsideProgram = (snapshot.provider === 'blink-process' || snapshot.provider === 'unicorn-linux')
+      && runtimeImage !== null
+      && runtimeImage !== undefined
+      && runtimeImage.role !== 'program';
+    if (!processOutsideProgram) {
+      if (snapshot.lastInstruction?.nodeId && graph.nodes.some((node) => node.id === snapshot.lastInstruction!.nodeId)) currentNodeId = snapshot.lastInstruction.nodeId;
+      else {
+        const address = executionAddressFromSnapshot({ ...snapshot, status: 'paused' });
+        if (address !== null) currentNodeId = graphNodeForAddress(graph, address)?.id ?? null;
+      }
+    }
   }
   return { nodeCounts, edgeCounts, currentNodeId };
 }
