@@ -59,7 +59,9 @@ assert(message.includes('static unsupported instruction'), 'diagnostic must dist
 assert(message.includes('not observed execution'), 'diagnostic must not claim the first static match was executed');
 assert(message.includes('x86-64-baseline'), 'diagnostic should name the pinned Blink baseline profile');
 assert(message.includes('authoritative executable PT_LOAD bytes decoded by Capstone'), 'diagnostic should explain the evidence source');
-assert(message.includes('baseline CPU target'), 'diagnostic should recommend portable guest generation');
+assert(message.includes('producer-agnostic'), 'diagnostic should state that the compatibility verdict is producer agnostic');
+assert(message.includes('compiler, assembler, linker, language or build system'), 'diagnostic should not prescribe a producer-specific rebuild command');
+assert(!message.includes('Zig/VZed'), 'execution-core diagnostic must not special-case a producer');
 
 const compatible = auditBlinkIsaDocument({ ...document, lines: [baseline, legacyV] });
 assert(compatible.compatible, 'baseline-only document should pass the Blink ISA preflight');
