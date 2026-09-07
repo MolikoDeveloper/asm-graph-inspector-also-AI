@@ -2,7 +2,7 @@ import type { LoadedImage } from '../binary/model';
 import type { ProjectFile } from '../project/model';
 
 export type ExecutionStatus = 'idle' | 'ready' | 'running' | 'paused' | 'exited' | 'halted' | 'trapped';
-export type ExecutionProviderKind = 'bounded-x86-64' | 'unicorn-machine' | 'asm-source-x86-64' | 'blink-process';
+export type ExecutionProviderKind = 'bounded-x86-64' | 'unicorn-machine' | 'unicorn-linux' | 'asm-source-x86-64' | 'blink-process';
 export type ExecutionSyscallPolicy = 'none' | 'stdio-exit';
 
 export interface ExecutionPolicy {
@@ -63,7 +63,7 @@ export interface ExecutionRuntimeImageSnapshot {
   runtimeAddress: bigint;
   imageAddress: bigint;
   loadBias: bigint;
-  confidence: 'fixed-address' | 'cached-signature' | 'signature';
+  confidence: 'fixed-address' | 'known-load-bias' | 'cached-signature' | 'signature';
   signatureBytes: number;
 }
 
@@ -73,7 +73,7 @@ export interface ExecutionRuntimeDisassemblySnapshot {
    * This is observational debugger state and must never be folded back into
    * the canonical Capstone/static analysis graph.
    */
-  source: 'blink-debugger';
+  source: 'blink-debugger' | 'unicorn-runtime';
   lines: string[];
   currentLine: number;
   image: ExecutionRuntimeImageSnapshot | null;
@@ -88,10 +88,9 @@ export interface ExecutionCrashInstructionSnapshot {
 }
 
 /**
- * A fatal Linux guest signal observed by Blink. `runtimeAddress` and registers
- * are captured at the signal boundary by the patched headless wrapper. Image
- * and instruction fields are only populated when the browser can prove the
- * mapping from authoritative bytes; unknown is preferable to a guessed module.
+ * A fatal guest signal/fault observed at a provider boundary. Blink currently
+ * supplies Linux signal metadata; Unicorn traps are surfaced through provider
+ * diagnostics until a stable signal translation layer is available.
  */
 export interface ExecutionCrashSnapshot {
   signal: number;
@@ -137,7 +136,6 @@ export interface ExecutionSnapshot {
   stderr: string;
   exitCode: number | null;
   trapReason: string | null;
-  /** Present on providers that can capture an observed fatal guest signal. */
   crash?: ExecutionCrashSnapshot | null;
   providerDiagnostics: ExecutionProviderDiagnostic[];
   events: ExecutionEvent[];
