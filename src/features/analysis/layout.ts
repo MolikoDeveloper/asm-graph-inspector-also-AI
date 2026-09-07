@@ -209,6 +209,84 @@ function layoutProgramFlow(graph: AnalysisGraph): PositionedGraphNode[] {
   return result;
 }
 
+function layoutBinaryStructure(graph: AnalysisGraph): PositionedGraphNode[] {
+  const nodes = graph.nodes;
+  if (!nodes.length) return [];
+  const nodeIds = new Set(nodes.map((node) => node.id));
+  const outgoing = new Map<string, string[]>();
+  const incoming = new Map<string, string[]>();
+  for (const edge of graph.edges) {
+    if (!nodeIds.has(edge.from) || !nodeIds.has(edge.to) || edge.from === edge.to) continue;
+    const out = outgoing.get(edge.from) ?? [];
+    out.push(edge.to);
+    outgoing.set(edge.from, out);
+    const inc = incoming.get(edge.to) ?? [];
+    inc.push(edge.from);
+    incoming.set(edge.to, inc);
+  }
+
+  const roots = nodes.filter((node) => !(incoming.get(node.id)?.length));
+  const root = roots[0] ?? nodes[0];
+  const depth = new Map<string, number>([[root.id, 0]]);
+  const queue = [root.id];
+  for (let cursor = 0; cursor < queue.length; cursor += 1) {
+    const from = queue[cursor];
+    const nextDepth = (depth.get(from) ?? 0) + 1;
+    for (const to of outgoing.get(from) ?? []) {
+      const previous = depth.get(to);
+      if (previous !== undefined && previous <= nextDepth) continue;
+      depth.set(to, nextDepth);
+      queue.push(to);
+    }
+  }
+  const maxDepth = Math.max(0, ...depth.values());
+  for (const node of nodes) if (!depth.has(node.id)) depth.set(node.id, maxDepth + 1);
+
+  const order = new Map(nodes.map((node, index) => [node.id, index] as const));
+  const byDepth = new Map<number, GraphNode[]>();
+  for (const item of nodes) {
+    const layer = depth.get(item.id) ?? 0;
+    const list = byDepth.get(layer) ?? [];
+    list.push(item);
+    byDepth.set(layer, list);
+  }
+
+  const result: PositionedGraphNode[] = [];
+  let yBase = 38;
+  for (const layer of [...byDepth.keys()].sort((a, b) => a - b)) {
+    const list = byDepth.get(layer)!;
+    list.sort((a, b) => {
+      const parentA = incoming.get(a.id)?.[0];
+      const parentB = incoming.get(b.id)?.[0];
+      const parentOrder = (order.get(parentA ?? '') ?? -1) - (order.get(parentB ?? '') ?? -1);
+      return parentOrder || (order.get(a.id) ?? 0) - (order.get(b.id) ?? 0);
+    });
+    const maxColumns = layer === 0 ? 1 : layer === 1 ? 6 : 5;
+    const columns = Math.min(maxColumns, Math.max(1, list.length));
+    const rows = Math.ceil(list.length / columns);
+    const width = layer === 0 ? 320 : layer === 1 ? 252 : 238;
+    const height = layer === 0 ? 82 : 66;
+    const gapX = layer === 0 ? 0 : 34;
+    const gapY = 28;
+    const totalWidth = columns * width + Math.max(0, columns - 1) * gapX;
+    const xBase = 60;
+    for (let index = 0; index < list.length; index += 1) {
+      const item = list[index];
+      const column = index % columns;
+      const row = Math.floor(index / columns);
+      result.push({
+        ...item,
+        x: xBase + column * (width + gapX),
+        y: yBase + row * (height + gapY),
+        width: layer === 0 ? Math.max(width, Math.min(420, totalWidth)) : width,
+        height
+      });
+    }
+    yBase += rows * (height + gapY) + (layer === 0 ? 78 : 54);
+  }
+  return result;
+}
+
 function layoutDataflow(graph: AnalysisGraph): PositionedGraphNode[] {
   return graph.nodes.map((node, index) => {
     const lane = Boolean(node.dataflowLane);
@@ -228,6 +306,7 @@ function layoutDataflow(graph: AnalysisGraph): PositionedGraphNode[] {
 export function layoutGraph(graph: AnalysisGraph): PositionedGraphNode[] {
   if (graph.viewKind === 'function-cfg') return layoutFunctionCfg(graph);
   if (graph.viewKind === 'program-flow') return layoutProgramFlow(graph);
+  if (graph.viewKind === 'binary-structure') return layoutBinaryStructure(graph);
   if (graph.viewKind === 'dataflow') return layoutDataflow(graph);
   const result: PositionedGraphNode[] = [];
   const rowHeight = 78;
