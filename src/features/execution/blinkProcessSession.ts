@@ -13,6 +13,10 @@ import {
   type ExecutionStatus
 } from './model';
 import { materializeRuntimeDependencyClosure, type MaterializedRuntimeModule, type RuntimeDependencyClosure } from './runtimeDependencies';
+import {
+  assertPreparedBlinkRuntimeEnvironmentMatches,
+  type PreparedBlinkRuntimeEnvironment
+} from './runtimeEnvironment';
 import { describeExecutionError, ExecutionProviderDiagnosticBuffer } from './providerDiagnostics';
 import { validateBlinkBuildProfile } from './blinkBuildProfile';
 import { captureBlinkFatalSignal, describeBlinkFatalSignal } from './blinkCrashDiagnostics';
@@ -214,11 +218,13 @@ export class BlinkProcessSession {
     file: ProjectFile,
     image: LoadedImage,
     policy: ExecutionPolicy = DEFAULT_EXECUTION_POLICY,
-    runtime: BlinkProcessRuntime = DEFAULT_BLINK_PROCESS_RUNTIME
+    runtime: BlinkProcessRuntime = DEFAULT_BLINK_PROCESS_RUNTIME,
+    preparedEnvironment: PreparedBlinkRuntimeEnvironment | null = null
   ): Promise<BlinkProcessSession> {
     if (file.kind !== 'binary' || !file.bytes) throw new Error('Blink process execution requires authoritative ELF bytes.');
+    if (preparedEnvironment) assertPreparedBlinkRuntimeEnvironmentMatches(file, image, preparedEnvironment);
     const session = new BlinkProcessSession(file, image, policy, runtime);
-    await session.initialize();
+    await session.initialize(preparedEnvironment);
     return session;
   }
 
@@ -242,8 +248,8 @@ export class BlinkProcessSession {
     this.runtimeImageResolver = new RuntimeImageResolver(candidates, fixedBiases);
   }
 
-  private async initialize(): Promise<void> {
-    const closure = await this.runtime.materialize(this.image.interpreter, this.image.neededLibraries);
+  private async initialize(preparedEnvironment: PreparedBlinkRuntimeEnvironment | null): Promise<void> {
+    const closure = preparedEnvironment?.closure ?? await this.runtime.materialize(this.image.interpreter, this.image.neededLibraries);
     this.prepareRuntimeImageResolver(closure);
     const { factory, wasmUrl } = await this.runtime.loadFactory();
 
@@ -299,7 +305,7 @@ export class BlinkProcessSession {
     this.statusValue = 'ready';
     appendEvent(this.eventsValue, {
       kind: 'prepared',
-      message: `Blink/WASM materialized ${this.file.name} with ${closure.modules.length} runtime module(s), ${closure.totalBytes.toLocaleString()} dependency bytes. Guest execution has not started yet.`
+      message: `Blink/WASM mounted ${this.file.name} with ${closure.modules.length} prepared runtime module(s), ${closure.totalBytes.toLocaleString()} dependency bytes. Guest execution has not started yet.`
     });
   }
 
