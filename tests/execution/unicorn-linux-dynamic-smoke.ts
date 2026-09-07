@@ -12,7 +12,7 @@ import type { ProjectFile } from '../../src/features/project/model';
 import { prepareLinuxRuntimeEnvironment } from '../../src/features/execution/linuxRuntimeEnvironment';
 import type { MaterializedRuntimeModule, RuntimeDependencyClosure } from '../../src/features/execution/runtimeDependencies';
 import { UnicornLinuxProcessSession } from '../../src/features/execution/unicornLinuxProcessSession';
-import type { UnicornFactory } from '../../src/features/execution/unicornTypes';
+import type { UnicornFactory, UnicornModule } from '../../src/features/execution/unicornTypes';
 import type { ExecutionPolicy, ExecutionSnapshot } from '../../src/features/execution/model';
 import { loadHeadlessCapstone } from '../../scripts/headless-capstone';
 
@@ -39,6 +39,31 @@ function materialized(requestedName: string, path: string): MaterializedRuntimeM
     sourceKind: 'file',
     sourceName: requestedName
   };
+}
+
+function captureUnicornEmulationErrors(module: UnicornModule, capture: (stack: string) => void): UnicornModule {
+  const OriginalUnicorn = module.Unicorn;
+  const InstrumentedUnicorn = class {
+    constructor(arch: number, mode: number) {
+      const engine = new OriginalUnicorn(arch, mode);
+      const originalEmuStart = engine.emu_start.bind(engine);
+      engine.emu_start = (begin, until, timeout, count) => {
+        try {
+          originalEmuStart(begin, until, timeout, count);
+        } catch (cause) {
+          capture(cause instanceof Error ? cause.stack ?? cause.message : String(cause));
+          throw cause;
+        }
+      };
+      return engine;
+    }
+  } as unknown as UnicornModule['Unicorn'];
+
+  return new Proxy(module, {
+    get(target, property, receiver) {
+      return property === 'Unicorn' ? InstrumentedUnicorn : Reflect.get(target, property, receiver);
+    }
+  });
 }
 
 function runtimeLoaderImageAddress(snapshot: ExecutionSnapshot): number | null {
@@ -100,7 +125,7 @@ function loaderSymbolContext(snapshot: ExecutionSnapshot, loaderPath: string): s
   }
 }
 
-function failureContext(snapshot: ExecutionSnapshot, fault: string, loaderPath: string): string {
+function failureContext(snapshot: ExecutionSnapshot, fault: string, loaderPath: string, wasmStack: string | null): string {
   const instruction = snapshot.lastInstruction
     ? `last=0x${snapshot.lastInstruction.address.toString(16)} ${snapshot.lastInstruction.mnemonic}${snapshot.lastInstruction.operands ? ` ${snapshot.lastInstruction.operands}` : ''}`
     : 'last=<none>';
@@ -131,6 +156,7 @@ function failureContext(snapshot: ExecutionSnapshot, fault: string, loaderPath: 
     `recent-instructions=${recentInstructions || '<none>'}`,
     `recent-syscalls=${syscalls || '<none>'}`,
     `provider=${diagnostics || '<none>'}`,
+    `wasm-stack=${wasmStack ? wasmStack.replace(/\n/g, ' <- ') : '<none>'}`,
     loaderSymbolContext(snapshot, loaderPath),
     loaderCodeWindow(snapshot, loaderPath)
   ].join(' ; ');
@@ -184,7 +210,9 @@ try {
   const runtime = join(temp, 'unicorn_x86.cjs');
   writeFileSync(runtime, runtimeBytes);
   const factory = createRequire(import.meta.url)(runtime) as UnicornFactory;
-  const [unicorn, capstone] = await Promise.all([factory(), loadHeadlessCapstone()]);
+  const [rawUnicorn, capstone] = await Promise.all([factory(), loadHeadlessCapstone()]);
+  let internalUnicornStack: string | null = null;
+  const unicorn = captureUnicornEmulationErrors(rawUnicorn, (stack) => { internalUnicornStack = stack; });
   const policy: ExecutionPolicy = {
     maxInstructions: 2_000_000,
     maxMappedBytes: 256 * 1024 * 1024,
@@ -201,7 +229,7 @@ try {
       if (snapshot.status === 'exited' || snapshot.status === 'trapped' || snapshot.status === 'halted') break;
     }
     const fault = decodeRuntimeRip(snapshot, loaderImage, modules[0].bytes, capstone);
-    assert.equal(snapshot.status, 'exited', failureContext(snapshot, fault, loaderPath));
+    assert.equal(snapshot.status, 'exited', failureContext(snapshot, fault, loaderPath, internalUnicornStack));
     assert.equal(snapshot.exitCode, 0);
     assert.match(snapshot.stdout, /hello from unicorn dynamic glibc/);
     assert.ok(snapshot.events.some((event) => event.kind === 'trace-gap'), 'dynamic startup must cross loader/dependency execution boundaries');
