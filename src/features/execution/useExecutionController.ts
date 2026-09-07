@@ -11,6 +11,10 @@ import {
 } from './blinkIsaPreflight';
 import { publishBlinkIsaPreflight } from './blinkIsaPreflightMonitor';
 import { prepareBlinkRuntimeEnvironment } from './runtimeEnvironment';
+import {
+  describeBlinkRuntimeIsaAdvisory,
+  describeBlinkRuntimeIsaFailure
+} from './runtimeIsaAudit';
 import { describeRuntimeSymbolVersionFailure } from './runtimeSymbolVersions';
 import { executionSupport, X86ExecutionSession } from './session';
 import { registerActiveExecutionInputSink } from './activeInput';
@@ -156,13 +160,29 @@ export function useExecutionController() {
         if (failure && !allowIncompatibleIsa) throw new Error(failure);
 
         // Resolve Global Dependencies once, validate the exact selected bytes,
-        // then hand the same immutable preparation evidence to Blink. This
-        // prevents compatibility and process mounting from independently
-        // walking PT_INTERP/DT_NEEDED and selecting different/stale providers.
+        // inventory the same runtime modules for ISA evidence, then hand the
+        // immutable preparation to Blink. Whole-image AVX/etc. inside DSOs is
+        // advisory because glibc/multiarch/IFUNC can dispatch around it; only
+        // mandatory runtime-path evidence (currently PT_INTERP entry) blocks.
         const runtimeEnvironment = await prepareBlinkRuntimeEnvironment(target.file, target.image);
         if (runGeneration.current !== generation) return null;
         if (!runtimeEnvironment.symbolVersions.compatible) {
           throw new Error(describeRuntimeSymbolVersionFailure(runtimeEnvironment.symbolVersions));
+        }
+        if (!runtimeEnvironment.runtimeIsa.compatible && !allowIncompatibleIsa) {
+          throw new Error(describeBlinkRuntimeIsaFailure(runtimeEnvironment.runtimeIsa));
+        }
+
+        const runtimeIsaMessage = !runtimeEnvironment.runtimeIsa.compatible
+          ? `${describeBlinkRuntimeIsaFailure(runtimeEnvironment.runtimeIsa)} Diagnostic probe explicitly requested: Blink will run so an observed signal/RIP can confirm the actual path.`
+          : describeBlinkRuntimeIsaAdvisory(runtimeEnvironment.runtimeIsa);
+        if (runtimeIsaMessage) {
+          setPreflight((currentPreflight) => ({
+            ...currentPreflight,
+            message: currentPreflight.message
+              ? `${currentPreflight.message} ${runtimeIsaMessage}`
+              : runtimeIsaMessage
+          }));
         }
 
         session = await BlinkProcessSession.create(
