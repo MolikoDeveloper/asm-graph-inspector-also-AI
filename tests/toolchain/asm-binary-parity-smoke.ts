@@ -19,12 +19,15 @@ function runTool(executable: string, args: string[]): void {
 
 const here = dirname(fileURLToPath(import.meta.url));
 const root = resolve(here, '../..');
-const sourcePath = resolve(root, 'tests/toolchain/fixtures/hello-world.asm');
+const sourcePath = resolve(root, 'tests/toolchain/fixtures/asm-binary-parity.asm');
 const nasmPath = resolve(root, 'public/vendor/toolchain/nasm.3.00.elf');
 const ldPath = resolve(root, 'public/vendor/toolchain/gnu-ld.2.43.50.elf');
 const source = await readFile(sourcePath, 'utf8');
 
-const legacy = runAsmHeadless('hello-world.asm', source, {
+// This fixture deliberately stays inside the intersection between the frozen
+// legacy source-semantic sandbox and real NASM syntax. The parity test must not
+// grow the legacy interpreter merely to support richer NASM expressions.
+const legacy = runAsmHeadless('asm-binary-parity.asm', source, {
   maxInstructions: 128,
   sliceInstructions: 32,
   maxMappedBytes: 4 * 1024 * 1024,
@@ -32,6 +35,7 @@ const legacy = runAsmHeadless('hello-world.asm', source, {
 });
 assert(legacy.snapshot.status === 'exited', `legacy ASM should exit, got ${legacy.snapshot.status}: ${legacy.snapshot.trapReason ?? ''}`);
 assert(legacy.snapshot.exitCode === 0, `legacy ASM should exit(0), got ${legacy.snapshot.exitCode}`);
+assert(legacy.snapshot.stdout === 'hello from nasm\n', `legacy fixture stdout changed unexpectedly: ${JSON.stringify(legacy.snapshot.stdout)}`);
 
 const work = await mkdtemp(resolve(tmpdir(), 'asm-graph-parity-'));
 try {
@@ -45,7 +49,7 @@ try {
     executableBytes.byteOffset,
     executableBytes.byteOffset + executableBytes.byteLength
   );
-  const binary = runElfHeadless('hello-world', executableBuffer, {
+  const binary = runElfHeadless('asm-binary-parity', executableBuffer, {
     capstone: await loadHeadlessCapstone(),
     maxInstructions: 128,
     sliceInstructions: 32
@@ -58,7 +62,7 @@ try {
   assert(binary.snapshot.provider === 'bounded-x86-64', `compiled execution must use binary provider, got ${binary.snapshot.provider}`);
   assert((binary.snapshot.lastInstruction?.address ?? 0) >= 0x400000, 'compiled execution trace must use real linked ELF addresses');
 
-  console.log('ASM binary parity smoke: PASS (legacy semantics == NASM/ld ELF output/exit, binary path uses real addresses)');
+  console.log('ASM binary parity smoke: PASS (legacy shared subset == NASM/ld ELF stdout/exit, binary path uses real addresses)');
 } finally {
   await rm(work, { recursive: true, force: true });
 }
