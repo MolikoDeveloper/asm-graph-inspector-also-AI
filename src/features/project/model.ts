@@ -1,9 +1,16 @@
 export type ProjectFileKind = 'text' | 'binary';
 
+export interface GeneratedProjectFileSourceRevision {
+  fileId: string;
+  updatedAt: number;
+  size: number;
+}
+
 export interface GeneratedProjectFileInfo {
   kind: 'assembly-build';
   backendId: string;
   sourceFileIds: string[];
+  sourceRevisions?: GeneratedProjectFileSourceRevision[];
   artifactKind: 'elf-executable' | 'elf-object' | 'flat-binary';
   builtAt: number;
 }
