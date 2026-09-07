@@ -5,7 +5,8 @@ import {
   executionAddressFromSnapshot,
   findBinaryFunctionForAddress,
   graphNodeForAddress,
-  imageContainsExecutableAddress
+  imageContainsExecutableAddress,
+  projectExecutionTrace
 } from '../../src/features/execution/follow';
 
 function assertEqual<T>(actual: T, expected: T, label: string): void {
@@ -81,4 +82,31 @@ assertEqual(imageContainsExecutableAddress(summary, 0x406828), true, 'main image
 assertEqual(imageContainsExecutableAddress(summary, 0x500010), false, 'non-executable address');
 assertEqual(executionAddressFromSnapshot({ ...snapshot, status: 'running' }), null, 'running snapshot must not follow');
 
-console.log('execution follow smoke: PASS (paused PC -> disassembly address -> function -> CFG block)');
+const contiguousTrace = projectExecutionTrace(graph, {
+  targetFileId: graph.fileId,
+  status: 'paused',
+  lastInstruction: { address: 0x406828, endAddress: 0x40682c, mnemonic: 'nop', operands: '' },
+  events: [
+    { kind: 'instruction', address: 0x406824, mnemonic: 'nop', operands: '' },
+    { kind: 'instruction', address: 0x406828, mnemonic: 'nop', operands: '' }
+  ]
+} as unknown as ExecutionSnapshot);
+assertEqual(contiguousTrace.nodeCounts.get('bb-entry'), 1, 'contiguous trace entry count');
+assertEqual(contiguousTrace.nodeCounts.get('bb-next'), 1, 'contiguous trace next count');
+assertEqual(contiguousTrace.edgeCounts.get('e'), 1, 'contiguous executed edge count');
+
+const crossedImageTrace = projectExecutionTrace(graph, {
+  targetFileId: graph.fileId,
+  status: 'paused',
+  lastInstruction: { address: 0x406828, endAddress: 0x40682c, mnemonic: 'nop', operands: '' },
+  events: [
+    { kind: 'instruction', address: 0x406824, mnemonic: 'nop', operands: '' },
+    { kind: 'trace-gap', reason: 'non-program-image' },
+    { kind: 'instruction', address: 0x406828, mnemonic: 'nop', operands: '' }
+  ]
+} as unknown as ExecutionSnapshot);
+assertEqual(crossedImageTrace.nodeCounts.get('bb-entry'), 1, 'cross-image trace entry count');
+assertEqual(crossedImageTrace.nodeCounts.get('bb-next'), 1, 'cross-image trace next count');
+assertEqual(crossedImageTrace.edgeCounts.get('e') ?? 0, 0, 'cross-image trace must not invent a skipped CFG edge');
+
+console.log('execution follow smoke: PASS (paused PC -> CFG follow + executed-only edges + runtime image gaps)');
