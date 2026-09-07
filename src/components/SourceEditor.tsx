@@ -36,6 +36,10 @@ function findAddressIndex(document: BinaryDisassemblyDocument, address: number):
   return best;
 }
 
+function hexBigInt(value: bigint): string {
+  return `0x${value.toString(16)}`;
+}
+
 function BinaryDisassemblyEditor({ file, fontSize, revealTarget, executionSnapshot, onFocus }: {
   file: ProjectFile;
   fontSize: number;
@@ -58,6 +62,7 @@ function BinaryDisassemblyEditor({ file, fontSize, revealTarget, executionSnapsh
     && executionSnapshot.status === 'paused'
     ? executionSnapshot.runtimeDisassembly
     : null;
+  const runtimeImage = runtimeDisassembly?.image ?? null;
   const runtimeCursorLine = runtimeDisassembly
     ? blinkRuntimeCursorLine(runtimeDisassembly.lines, executionSnapshot.registers?.rip, runtimeDisassembly.currentLine)
     : -1;
@@ -121,7 +126,13 @@ function BinaryDisassemblyEditor({ file, fontSize, revealTarget, executionSnapsh
             <span>Blink debugger</span>
             <span>RIP {executionSnapshot.registers ? `0x${executionSnapshot.registers.rip.toString(16)}` : '—'}</span>
             <span>step {executionSnapshot.instructionCount.toLocaleString()}</span>
-            <small>Runtime view only · static Capstone analysis is unchanged.</small>
+            {runtimeImage ? <>
+              <span title={`runtime ${hexBigInt(runtimeImage.runtimeAddress)}`}>{runtimeImage.role} · {runtimeImage.name}</span>
+              <span>image {hexBigInt(runtimeImage.imageAddress)}</span>
+              <span>bias {hexBigInt(runtimeImage.loadBias)}</span>
+              <small>{runtimeImage.confidence} · {runtimeImage.signatureBytes} signature byte{runtimeImage.signatureBytes === 1 ? '' : 's'}</small>
+            </> : <span title="The current byte signature was not unique across loaded executable images.">image unresolved</span>}
+            <small>Runtime identity is observational · static ELF + Capstone analysis remains authoritative.</small>
           </div>
           <div ref={runtimeScrollRef} className="runtime-disassembly-scroll">
             {runtimeDisassembly.lines.map((rawLine, index) => (
