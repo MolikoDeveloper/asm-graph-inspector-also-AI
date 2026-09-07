@@ -5,6 +5,12 @@ import type { ExecutionSnapshot } from './model';
 export function executionAddressFromSnapshot(snapshot: ExecutionSnapshot): number | null {
   if (snapshot.status !== 'paused') return null;
   if (snapshot.lastInstruction?.address !== undefined) return snapshot.lastInstruction.address;
+  if (snapshot.provider === 'blink-process') {
+    const runtimeImage = snapshot.runtimeDisassembly?.image;
+    if (!runtimeImage || runtimeImage.role !== 'program') return null;
+    const imageAddress = Number(runtimeImage.imageAddress);
+    return Number.isSafeInteger(imageAddress) ? imageAddress : null;
+  }
   const rip = snapshot.registers?.rip;
   if (rip === null || rip === undefined) return null;
   const value = Number(rip);
