@@ -1,4 +1,4 @@
-import type { InspectorProject, ProjectFile } from './model';
+import type { GeneratedProjectFileInfo, InspectorProject, ProjectFile } from './model';
 
 export interface ProjectBundleFileV1 {
   id: string;
@@ -8,6 +8,7 @@ export interface ProjectBundleFileV1 {
   language: ProjectFile['language'];
   size: number;
   updatedAt: number;
+  generated?: GeneratedProjectFileInfo;
   content: { encoding: 'utf8' | 'base64'; data: string };
 }
 
@@ -45,6 +46,7 @@ function exportFile(file: ProjectFile): ProjectBundleFileV1 {
     language: file.language,
     size: file.size,
     updatedAt: file.updatedAt,
+    generated: file.generated,
     content: file.kind === 'binary'
       ? { encoding: 'base64', data: arrayBufferToBase64(file.bytes ?? new ArrayBuffer(0)) }
       : { encoding: 'utf8', data: file.text ?? '' }
