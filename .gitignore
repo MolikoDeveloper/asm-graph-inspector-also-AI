@@ -5,3 +5,4 @@ dist/
 *.log
 *.tsbuildinfo
 runtime-libs
+public/vendor/toolchain/*.elf
