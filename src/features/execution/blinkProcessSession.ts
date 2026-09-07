@@ -29,10 +29,12 @@ const SIGTRAP = 5;
 const BLINK_PREEMPT = 40;
 const BLINK_STEP = 41;
 const BLINK_FAKE_TTY = 42;
+const X86_MAX_INSTRUCTION_BYTES = 15;
 
 // clstruct v1 indices from the pinned robalb/blink browser fork.
 const CL = Object.freeze({
   version: 0,
+  codemem: 1,
   flags: 7,
   csBase: 8,
   rip: 9,
@@ -362,7 +364,25 @@ export class BlinkProcessSession {
       catch (error: unknown) {
         this.providerDiagnostics.add('error', `Fatal-signal register capture failed: ${describeExecutionError(error)}`);
       }
-      this.crashValue = captureBlinkFatalSignal(this.file, this.image, signal, code, registers);
+
+      let runtimeCodeBytes = new Uint8Array();
+      try { runtimeCodeBytes = this.readObservedCodeBytes(); }
+      catch (error: unknown) {
+        this.providerDiagnostics.add('warning', `Fatal-signal code-byte capture failed: ${describeExecutionError(error)}`);
+      }
+
+      let runtimeImage = null;
+      if (registers && runtimeCodeBytes.length && this.runtimeImageResolver) {
+        try { runtimeImage = this.runtimeImageResolver.resolveBytes(registers.rip, runtimeCodeBytes); }
+        catch (error: unknown) {
+          this.providerDiagnostics.add('warning', `Fatal-signal runtime image attribution failed: ${describeExecutionError(error)}`);
+        }
+      }
+
+      this.crashValue = captureBlinkFatalSignal(this.file, this.image, signal, code, registers, {
+        runtimeCodeBytes: [...runtimeCodeBytes],
+        runtimeImage
+      });
       this.trapReasonValue = describeBlinkFatalSignal(this.crashValue);
       appendEvent(this.eventsValue, { kind: 'trap', reason: this.trapReasonValue });
       return;
@@ -415,6 +435,20 @@ export class BlinkProcessSession {
       r12: readU64(CL.r12), r13: readU64(CL.r13), r14: readU64(CL.r14), r15: readU64(CL.r15),
       rflags: readU64(CL.flags)
     };
+  }
+
+  private readObservedCodeBytes(maxBytes = X86_MAX_INSTRUCTION_BYTES): Uint8Array {
+    const module = this.module;
+    if (!module || !this.clstruct || maxBytes <= 0) return new Uint8Array();
+    const view = new DataView(module.wasmExports.memory.buffer);
+    const valueAt = (index: number): number => view.getUint32(this.clstruct + index * 4, true);
+    if (valueAt(CL.version) !== 1) return new Uint8Array();
+    const pointer = valueAt(CL.codemem);
+    if (!pointer) return new Uint8Array();
+    const heap = new Uint8Array(module.wasmExports.memory.buffer);
+    if (pointer >= heap.byteLength) return new Uint8Array();
+    const end = Math.min(heap.byteLength, pointer + maxBytes);
+    return heap.slice(pointer, end);
   }
 
   private readRuntimeDisassembly(rip: bigint | null | undefined): ExecutionRuntimeDisassemblySnapshot | null {
@@ -597,7 +631,7 @@ export class BlinkProcessSession {
         this.processMode = 'headless-run';
         appendEvent(this.eventsValue, {
           kind: 'prepared',
-          message: 'Blink headless process execution started. Internal Blink disassembly is disabled; lightweight signal/preemption register capture remains enabled and analyzer/Capstone stays authoritative for code inspection.'
+          message: 'Blink headless process execution started. Internal Blink disassembly is disabled; lightweight signal/preemption register + code-byte capture remains enabled and analyzer/Capstone stays authoritative for code inspection.'
         });
         this.module._blinkenlib_run_fast();
       } else {
