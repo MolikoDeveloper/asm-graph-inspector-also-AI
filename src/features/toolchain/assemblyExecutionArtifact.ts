@@ -29,44 +29,52 @@ function sameIds(left: string[], right: string[]): boolean {
   return a.every((value, index) => value === b[index]);
 }
 
-function sourceRevisionMap(sources: ProjectFile[]): Map<string, { updatedAt: number; size: number }> {
-  return new Map(sources.map((file) => [file.id, { updatedAt: file.updatedAt, size: file.size }]));
+function hex(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
 }
 
-export function isFreshAssemblyArtifact(
+async function sourceSha256(file: ProjectFile): Promise<string> {
+  const bytes = new TextEncoder().encode(file.text ?? '');
+  return hex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
+}
+
+export async function isFreshAssemblyArtifact(
   file: ProjectFile,
   project: InspectorProject,
   backendId: string,
   sourceFileIds?: string[]
-): boolean {
+): Promise<boolean> {
   if (file.kind !== 'binary' || !file.bytes || file.bytes.byteLength === 0) return false;
   const generated = file.generated;
   if (!generated || generated.kind !== 'assembly-build') return false;
   if (generated.artifactKind !== 'elf-executable' || generated.backendId !== backendId) return false;
 
   const sources = selectedAsmSources(project, sourceFileIds ?? generated.sourceFileIds);
-  if (!sources.length || !sameIds(generated.sourceFileIds, sources.map((file) => file.id))) return false;
-  if (!generated.sourceRevisions?.length) return false;
+  if (!sources.length || !sameIds(generated.sourceFileIds, sources.map((source) => source.id))) return false;
+  if (!generated.sourceRevisions?.length || generated.sourceRevisions.length !== sources.length) return false;
 
-  const expected = sourceRevisionMap(sources);
-  if (generated.sourceRevisions.length !== expected.size) return false;
-  return generated.sourceRevisions.every((revision) => {
-    const current = expected.get(revision.fileId);
-    return current !== undefined && current.updatedAt === revision.updatedAt && current.size === revision.size;
-  });
+  const revisions = new Map(generated.sourceRevisions.map((revision) => [revision.fileId, revision]));
+  for (const source of sources) {
+    const revision = revisions.get(source.id);
+    if (!revision) return false;
+    if (revision.updatedAt !== source.updatedAt || revision.size !== source.size) return false;
+    if (revision.sha256 !== await sourceSha256(source)) return false;
+  }
+  return true;
 }
 
-export function findFreshAssemblyArtifact(
+export async function findFreshAssemblyArtifact(
   project: InspectorProject,
   backendId: string,
   sourceFileIds?: string[],
   outputProjectPath?: string
-): ProjectFile | null {
+): Promise<ProjectFile | null> {
   const normalizedOutput = outputProjectPath?.trim().replace(/\\/g, '/').replace(/^\/+/, '');
-  return project.files.find((file) =>
-    (!normalizedOutput || file.path === normalizedOutput) &&
-    isFreshAssemblyArtifact(file, project, backendId, sourceFileIds)
-  ) ?? null;
+  for (const file of project.files) {
+    if (normalizedOutput && file.path !== normalizedOutput) continue;
+    if (await isFreshAssemblyArtifact(file, project, backendId, sourceFileIds)) return file;
+  }
+  return null;
 }
 
 export async function ensureAssemblyExecutable(
@@ -74,7 +82,7 @@ export async function ensureAssemblyExecutable(
   backend: AssemblerBackend,
   options: AssemblyProjectBuildOptions = {}
 ): Promise<EnsuredAssemblyArtifact> {
-  const reusable = findFreshAssemblyArtifact(project, backend.id, options.sourceFileIds, options.outputProjectPath);
+  const reusable = await findFreshAssemblyArtifact(project, backend.id, options.sourceFileIds, options.outputProjectPath);
   if (reusable) {
     return {
       file: reusable,
