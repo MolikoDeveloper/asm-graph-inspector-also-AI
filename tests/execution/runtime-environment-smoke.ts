@@ -11,6 +11,7 @@ import {
   prepareBlinkRuntimeEnvironment
 } from '../../src/features/execution/runtimeEnvironment';
 import type { RuntimeDependencyClosure } from '../../src/features/execution/runtimeDependencies';
+import type { BlinkRuntimeIsaAudit } from '../../src/features/execution/runtimeIsaAudit';
 import type { RuntimeSymbolVersionValidation } from '../../src/features/execution/runtimeSymbolVersions';
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -59,9 +60,20 @@ const versions: RuntimeSymbolVersionValidation = {
   checkedRequirements: 0,
   issues: []
 };
+const runtimeIsa: BlinkRuntimeIsaAudit = {
+  compatible: true,
+  scannedModules: 0,
+  scannedInstructions: 0,
+  decodedBytes: 0,
+  skippedBytes: 0,
+  advisoryModuleCount: 0,
+  blockingModuleCount: 0,
+  modules: []
+};
 
 let preparationMaterializations = 0;
 let versionValidations = 0;
+let runtimeIsaAudits = 0;
 const prepared = await prepareBlinkRuntimeEnvironment(file, image, {
   materialize: async (interpreterPath, directNeeded) => {
     preparationMaterializations += 1;
@@ -75,14 +87,21 @@ const prepared = await prepareBlinkRuntimeEnvironment(file, image, {
     assert(rootBytes === file.bytes, 'symbol-version validator should inspect authoritative root bytes');
     assert(selectedClosure === closure, 'symbol-version validator must receive the exact materialized closure');
     return versions;
+  },
+  auditRuntimeIsa: async (selectedClosure) => {
+    runtimeIsaAudits += 1;
+    assert(selectedClosure === closure, 'runtime ISA audit must receive the exact materialized closure');
+    return runtimeIsa;
   }
 });
 
 assert(prepared.schema === BLINK_RUNTIME_ENVIRONMENT_SCHEMA, 'prepared environment schema mismatch');
 assert(prepared.closure === closure, 'prepared environment must retain exact closure identity');
 assert(prepared.symbolVersions === versions, 'prepared environment must retain exact symbol-version evidence');
+assert(prepared.runtimeIsa === runtimeIsa, 'prepared environment must retain exact runtime ISA evidence');
 assert(preparationMaterializations === 1, `runtime preparation must materialize once, got ${preparationMaterializations}`);
 assert(versionValidations === 1, `runtime preparation must validate symbol versions once, got ${versionValidations}`);
+assert(runtimeIsaAudits === 1, `runtime preparation must audit runtime ISA once, got ${runtimeIsaAudits}`);
 
 class MinimalBlinkModule implements BlinkModule {
   readonly wasmExports = { memory: new WebAssembly.Memory({ initial: 1 }) };
@@ -143,6 +162,7 @@ assert(
   forbiddenSessionMaterializations === 0,
   `prepared Blink session must not rematerialize Global Dependencies, got ${forbiddenSessionMaterializations} call(s)`
 );
+assert(runtimeIsaAudits === 1, 'BlinkProcessSession must reuse prepared runtime ISA evidence instead of rescanning runtime modules');
 
 let fallbackMaterializations = 0;
 const fallbackSession = await BlinkProcessSession.create(
@@ -171,4 +191,4 @@ try {
 }
 assert(staleRejected, 'prepared runtime environment must fail closed after the binary artifact changes');
 
-console.log('runtime environment smoke: PASS (prepare once -> validate same closure -> Blink reuses exact closure -> stale reuse rejected)');
+console.log('runtime environment smoke: PASS (prepare once -> validate/audit exact closure once -> Blink reuses exact closure/evidence -> stale reuse rejected)');
