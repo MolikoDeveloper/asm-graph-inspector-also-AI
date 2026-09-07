@@ -11,6 +11,8 @@ BLINK_REPO='https://github.com/robalb/blink.git'
 PROFILE='asm-graph-inspector-linux-x86-64-baseline-v1'
 PROFILE_SCHEMA='asm-graph.blink-build-profile/v1'
 OUT='public/vendor/blink'
+ROOT="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+HEADLESS_SIGNAL_PATCH="$ROOT/scripts/patches/blink-headless-signal-state.patch"
 
 requirements=(git make emconfigure emmake emcc sha256sum)
 for cmd in "${requirements[@]}"; do
@@ -20,6 +22,11 @@ for cmd in "${requirements[@]}"; do
     exit 1
   fi
 done
+
+if [[ ! -f "$HEADLESS_SIGNAL_PATCH" ]]; then
+  echo "Blink source build is missing $HEADLESS_SIGNAL_PATCH." >&2
+  exit 1
+fi
 
 mkdir -p "$OUT"
 work="$(mktemp -d "${TMPDIR:-/tmp}/asm-graph-blink.XXXXXX")"
@@ -31,6 +38,9 @@ git -C "$work" init -q
 git -C "$work" remote add origin "$BLINK_REPO"
 git -C "$work" fetch -q --depth 1 origin "$BLINK_COMMIT"
 git -C "$work" checkout -q --detach FETCH_HEAD
+printf 'Applying ASM Graph Inspector headless signal-state patch...\n'
+git -C "$work" apply --check "$HEADLESS_SIGNAL_PATCH"
+git -C "$work" apply "$HEADLESS_SIGNAL_PATCH"
 
 # Keep the Emscripten contract aligned with robalb/x86-64-playground, but use a
 # CPU/process profile suitable for contemporary baseline glibc:
@@ -80,6 +90,7 @@ cat > "$OUT/build-profile.json" <<JSON
   "build": {
     "disableJit": true,
     "nonPosixLinuxApis": true,
+    "headlessSignalRegisters": true,
     "configure": ["--disable-all", "--enable-x87", "--enable-mmx", "--enable-nonposix"],
     "emscripten": "$emcc_version"
   },
@@ -93,5 +104,6 @@ JSON
 printf 'Built ASM Graph Inspector Blink Process Sandbox:\n'
 printf '  source  %s\n' "$BLINK_COMMIT"
 printf '  profile %s\n' "$PROFILE"
+printf '  crash   headless signal register snapshots enabled\n'
 printf '  JS      %s\n' "$js_sha"
 printf '  WASM    %s\n' "$wasm_sha"
