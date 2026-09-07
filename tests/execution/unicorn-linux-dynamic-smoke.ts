@@ -16,6 +16,9 @@ import type { UnicornFactory, UnicornModule } from '../../src/features/execution
 import type { ExecutionPolicy, ExecutionSnapshot } from '../../src/features/execution/model';
 import { loadHeadlessCapstone } from '../../scripts/headless-capstone';
 
+const INVOKE_DIAGNOSTIC_KEY = '__asmGraphUnicornInvokeIijjii';
+type InvokeDiagnosticGlobal = typeof globalThis & { [INVOKE_DIAGNOSTIC_KEY]?: unknown[] };
+
 function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
@@ -39,6 +42,29 @@ function materialized(requestedName: string, path: string): MaterializedRuntimeM
     sourceKind: 'file',
     sourceName: requestedName
   };
+}
+
+function instrumentInvokeIijjii(source: string): string {
+  const pattern = /function invoke_iijjii\(index,a1,a2,a3,a4,a5\)\{/g;
+  const matches = source.match(pattern) ?? [];
+  assert.equal(matches.length, 1, 'vendored Unicorn runtime must contain exactly one Emscripten invoke_iijjii wrapper');
+  return source.replace(pattern, (match) => `${match}globalThis.${INVOKE_DIAGNOSTIC_KEY}=[index,a1,a2,a3,a4,a5];`);
+}
+
+function formatInvokeValue(value: unknown): string {
+  if (typeof value === 'bigint') return `0x${BigInt.asUintN(64, value).toString(16)}`;
+  if (typeof value === 'number' && Number.isFinite(value)) {
+    const unsigned = value >>> 0;
+    return `${value}/u32:0x${unsigned.toString(16)}`;
+  }
+  return String(value);
+}
+
+function currentInvokeDiagnostic(): string {
+  const values = (globalThis as InvokeDiagnosticGlobal)[INVOKE_DIAGNOSTIC_KEY];
+  if (!Array.isArray(values) || values.length !== 6) return 'invoke_iijjii=<unobserved>';
+  const [index, a1, a2, a3, a4, a5] = values;
+  return `invoke_iijjii=index:${formatInvokeValue(index)},a1:${formatInvokeValue(a1)},a2:${formatInvokeValue(a2)},a3:${formatInvokeValue(a3)},a4:${formatInvokeValue(a4)},a5:${formatInvokeValue(a5)}`;
 }
 
 function captureUnicornEmulationErrors(module: UnicornModule, capture: (stack: string) => void): UnicornModule {
@@ -157,6 +183,7 @@ function failureContext(snapshot: ExecutionSnapshot, fault: string, loaderPath: 
     `recent-syscalls=${syscalls || '<none>'}`,
     `provider=${diagnostics || '<none>'}`,
     `wasm-stack=${wasmStack ? wasmStack.replace(/\n/g, ' <- ') : '<none>'}`,
+    currentInvokeDiagnostic(),
     loaderSymbolContext(snapshot, loaderPath),
     loaderCodeWindow(snapshot, loaderPath)
   ].join(' ; ');
@@ -206,9 +233,9 @@ try {
   });
   assert.equal(environment.symbolVersions.compatible, true, 'host libc/loader must satisfy the executable symbol-version contract');
 
-  const runtimeBytes = readFileSync(resolve('public/vendor/unicorn/unicorn_x86.js'));
+  const runtimeSource = instrumentInvokeIijjii(readFileSync(resolve('public/vendor/unicorn/unicorn_x86.js'), 'utf8'));
   const runtime = join(temp, 'unicorn_x86.cjs');
-  writeFileSync(runtime, runtimeBytes);
+  writeFileSync(runtime, runtimeSource);
   const factory = createRequire(import.meta.url)(runtime) as UnicornFactory;
   const [rawUnicorn, capstone] = await Promise.all([factory(), loadHeadlessCapstone()]);
   let internalUnicornStack: string | null = null;
@@ -238,5 +265,6 @@ try {
     session.dispose();
   }
 } finally {
+  delete (globalThis as InvokeDiagnosticGlobal)[INVOKE_DIAGNOSTIC_KEY];
   rmSync(temp, { recursive: true, force: true });
 }
