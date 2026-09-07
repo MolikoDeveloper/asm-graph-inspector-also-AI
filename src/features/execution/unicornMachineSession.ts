@@ -17,9 +17,38 @@ import type { UnicornEngine, UnicornHook, UnicornModule } from './unicornTypes';
 
 const PAGE_SIZE = 4096;
 const STACK_TOP = 0x0000_7fff_ffff_f000;
+const MMAP_BASE = 0x0000_6000_0000_0000;
 const MAX_IO_BYTES = 1024 * 1024;
 const MAX_X86_INSTRUCTION_BYTES = 15;
 const EMULATION_UNTIL = 0xffff_ffff_ffff_ffffn;
+
+const SYS_READ = 0;
+const SYS_WRITE = 1;
+const SYS_MMAP = 9;
+const SYS_MPROTECT = 10;
+const SYS_MUNMAP = 11;
+const SYS_BRK = 12;
+const SYS_GETPID = 39;
+const SYS_UNAME = 63;
+const SYS_ARCH_PRCTL = 158;
+const SYS_GETTID = 186;
+const SYS_CLOCK_GETTIME = 228;
+const SYS_EXIT = 60;
+const SYS_EXIT_GROUP = 231;
+
+const MAP_FIXED = 0x10;
+const MAP_ANONYMOUS = 0x20;
+const ARCH_SET_GS = 0x1001;
+const ARCH_SET_FS = 0x1002;
+const ARCH_GET_FS = 0x1003;
+const ARCH_GET_GS = 0x1004;
+
+interface DynamicMapping {
+  address: number;
+  size: number;
+  permissions: number;
+  kind: 'brk' | 'mmap';
+}
 
 function appendEvent(events: ExecutionEvent[], event: ExecutionEvent): void {
   events.push(event);
@@ -40,15 +69,43 @@ function safeNumber(value: bigint, label: string): number {
   return number;
 }
 
+function terminal(status: ExecutionStatus): boolean {
+  return status === 'exited' || status === 'halted' || status === 'trapped';
+}
+
 function segmentPermissions(module: UnicornModule, readable: boolean, writable: boolean, executable: boolean): number {
   return (readable ? module.PROT_READ : 0)
     | (writable ? module.PROT_WRITE : 0)
     | (executable ? module.PROT_EXEC : 0);
 }
 
+function linuxProtection(module: UnicornModule, protection: number): number {
+  return (protection & 1 ? module.PROT_READ : 0)
+    | (protection & 2 ? module.PROT_WRITE : 0)
+    | (protection & 4 ? module.PROT_EXEC : 0);
+}
+
 function writeU64(engine: UnicornEngine, address: number, value: bigint): void {
   const bytes = new Uint8Array(8);
-  new DataView(bytes.buffer).setBigUint64(0, value, true);
+  new DataView(bytes.buffer).setBigUint64(0, BigInt.asUintN(64, value), true);
+  engine.mem_write(address, bytes);
+}
+
+function writeTimespec(engine: UnicornEngine, address: number, milliseconds: number): void {
+  const seconds = Math.floor(milliseconds / 1000);
+  const nanoseconds = Math.floor((milliseconds - seconds * 1000) * 1_000_000);
+  writeU64(engine, address, BigInt(seconds));
+  writeU64(engine, address + 8, BigInt(nanoseconds));
+}
+
+function writeUtsName(engine: UnicornEngine, address: number): void {
+  const fields = ['Linux', 'asm-graph', '6.0.0-browser', '#1 virtual userspace', 'x86_64', 'localdomain'];
+  const bytes = new Uint8Array(65 * fields.length);
+  const encoder = new TextEncoder();
+  fields.forEach((field, index) => {
+    const encoded = encoder.encode(field).subarray(0, 64);
+    bytes.set(encoded, index * 65);
+  });
   engine.mem_write(address, bytes);
 }
 
@@ -76,6 +133,11 @@ export class UnicornMachineSession {
   private readonly decoder: X86_64InstructionDecoder;
   private codeHook: UnicornHook | null = null;
   private disposed = false;
+  private mappedBytesValue = 0;
+  private heapBaseValue = 0;
+  private programBreakValue = 0;
+  private mmapCursorValue = MMAP_BASE;
+  private dynamicMappings = new Map<number, DynamicMapping>();
   stdinBytes: Uint8Array;
   stdinCursor = 0;
 
@@ -97,7 +159,7 @@ export class UnicornMachineSession {
       this.engine.reg_write_i64(unicorn.X86_REG_RIP, BigInt(image.entry));
       appendEvent(this.eventsValue, {
         kind: 'prepared',
-        message: `Loaded ${file.name} into Unicorn/WASM at fixed ELF virtual addresses; entry=0x${image.entry.toString(16)}.`
+        message: `Loaded ${file.name} into Unicorn/WASM at fixed ELF virtual addresses; entry=0x${image.entry.toString(16)}; Linux userspace-lite is kernel-less.`
       });
     } catch (error) {
       this.decoder.close();
@@ -131,11 +193,13 @@ export class UnicornMachineSession {
   private mapImageAndStack(): void {
     const fileBytes = new Uint8Array(this.file.bytes!);
     const pagePermissions = new Map<number, number>();
+    let programEnd = 0;
 
     for (const segment of this.image.segments) {
       if (segment.memorySize <= 0) continue;
       const start = alignDown(segment.virtualAddress, PAGE_SIZE);
       const end = alignUp(segment.virtualAddress + segment.memorySize, PAGE_SIZE);
+      programEnd = Math.max(programEnd, segment.virtualAddress + segment.memorySize);
       const perms = segmentPermissions(this.unicorn, segment.readable, segment.writable, segment.executable);
       for (let page = start; page < end; page += PAGE_SIZE) {
         pagePermissions.set(page, (pagePermissions.get(page) ?? 0) | perms);
@@ -148,9 +212,9 @@ export class UnicornMachineSession {
       pagePermissions.set(page, this.unicorn.PROT_READ | this.unicorn.PROT_WRITE);
     }
 
-    const mappedBytes = pagePermissions.size * PAGE_SIZE;
-    if (mappedBytes > this.policy.maxMappedBytes) {
-      throw new Error(`Unicorn mapping budget exceeded: ${mappedBytes} bytes > ${this.policy.maxMappedBytes}.`);
+    this.mappedBytesValue = pagePermissions.size * PAGE_SIZE;
+    if (this.mappedBytesValue > this.policy.maxMappedBytes) {
+      throw new Error(`Unicorn mapping budget exceeded: ${this.mappedBytesValue} bytes > ${this.policy.maxMappedBytes}.`);
     }
 
     const pages = [...pagePermissions.keys()].sort((a, b) => a - b);
@@ -168,6 +232,9 @@ export class UnicornMachineSession {
     }
 
     for (const page of pages) this.engine.mem_protect(page, PAGE_SIZE, pagePermissions.get(page)!);
+    this.heapBaseValue = alignUp(programEnd, PAGE_SIZE);
+    this.programBreakValue = this.heapBaseValue;
+    this.mmapCursorValue = Math.max(MMAP_BASE, alignUp(this.heapBaseValue + 16 * PAGE_SIZE, PAGE_SIZE));
     this.initializeStack(stackBase);
   }
 
@@ -206,7 +273,7 @@ export class UnicornMachineSession {
   }
 
   private onInstruction(runtimeAddress: bigint, size: number): void {
-    if (this.statusValue === 'exited' || this.statusValue === 'halted' || this.statusValue === 'trapped') {
+    if (terminal(this.statusValue)) {
       this.engine.emu_stop();
       return;
     }
@@ -245,6 +312,139 @@ export class UnicornMachineSession {
     }
   }
 
+  private setSyscallResult(value: bigint | number): void {
+    this.engine.reg_write_i64(this.unicorn.X86_REG_RAX, BigInt(value));
+  }
+
+  private recordSyscall(number: number, name: string, detail: string): void {
+    appendEvent(this.eventsValue, { kind: 'syscall', number, name, detail });
+  }
+
+  private reserveMapping(bytes: number): void {
+    if (bytes < 0 || this.mappedBytesValue + bytes > this.policy.maxMappedBytes) {
+      throw new Error(`Unicorn mapping budget exceeded: ${this.mappedBytesValue + bytes} bytes > ${this.policy.maxMappedBytes}.`);
+    }
+    this.mappedBytesValue += bytes;
+  }
+
+  private releaseMapping(bytes: number): void {
+    this.mappedBytesValue = Math.max(0, this.mappedBytesValue - Math.max(0, bytes));
+  }
+
+  private syscallBrk(number: number): void {
+    const requested = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI), 'brk address');
+    if (requested === 0) {
+      this.setSyscallResult(this.programBreakValue);
+      this.recordSyscall(number, 'brk', `query=0x${this.programBreakValue.toString(16)}`);
+      return;
+    }
+    if (requested < this.heapBaseValue) {
+      this.setSyscallResult(this.programBreakValue);
+      this.recordSyscall(number, 'brk', `rejected=0x${requested.toString(16)}, current=0x${this.programBreakValue.toString(16)}`);
+      return;
+    }
+
+    const oldEnd = alignUp(this.programBreakValue, PAGE_SIZE);
+    const newEnd = alignUp(requested, PAGE_SIZE);
+    if (newEnd > oldEnd) {
+      const size = newEnd - oldEnd;
+      this.reserveMapping(size);
+      try {
+        this.engine.mem_map(oldEnd, size, this.unicorn.PROT_READ | this.unicorn.PROT_WRITE);
+        this.dynamicMappings.set(oldEnd, { address: oldEnd, size, permissions: this.unicorn.PROT_READ | this.unicorn.PROT_WRITE, kind: 'brk' });
+      } catch (cause) {
+        this.releaseMapping(size);
+        throw cause;
+      }
+    } else if (newEnd < oldEnd) {
+      const size = oldEnd - newEnd;
+      this.engine.mem_unmap(newEnd, size);
+      this.releaseMapping(size);
+      for (const [base, mapping] of this.dynamicMappings) {
+        if (mapping.kind === 'brk' && base >= newEnd) this.dynamicMappings.delete(base);
+      }
+    }
+    this.programBreakValue = requested;
+    this.setSyscallResult(requested);
+    this.recordSyscall(number, 'brk', `value=0x${requested.toString(16)}`);
+  }
+
+  private syscallMmap(number: number): void {
+    const requestedAddress = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI), 'mmap address');
+    const requestedLength = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RSI), 'mmap length');
+    const protection = Number(this.engine.reg_read_i64(this.unicorn.X86_REG_RDX));
+    const flags = Number(this.engine.reg_read_i64(this.unicorn.X86_REG_R10));
+    const fd = this.engine.reg_read_i64(this.unicorn.X86_REG_R8);
+    const offset = this.engine.reg_read_i64(this.unicorn.X86_REG_R9);
+    if (requestedLength <= 0) throw new Error('mmap length must be greater than zero.');
+    if ((flags & MAP_ANONYMOUS) === 0) throw new Error(`mmap currently accepts anonymous mappings only (flags=0x${flags.toString(16)}, fd=${fd}, offset=${offset}).`);
+    if ((flags & MAP_FIXED) !== 0) throw new Error('mmap MAP_FIXED is not implemented by the Unicorn userspace-lite contract.');
+
+    const size = alignUp(requestedLength, PAGE_SIZE);
+    const address = alignUp(this.mmapCursorValue, PAGE_SIZE);
+    const permissions = linuxProtection(this.unicorn, protection);
+    this.reserveMapping(size);
+    try {
+      this.engine.mem_map(address, size, permissions);
+    } catch (cause) {
+      this.releaseMapping(size);
+      throw cause;
+    }
+    this.dynamicMappings.set(address, { address, size, permissions, kind: 'mmap' });
+    this.mmapCursorValue = address + size + PAGE_SIZE;
+    this.setSyscallResult(address);
+    this.recordSyscall(number, 'mmap', `hint=0x${requestedAddress.toString(16)}, returned=0x${address.toString(16)}, length=${requestedLength}, prot=0x${protection.toString(16)}, flags=0x${flags.toString(16)}`);
+  }
+
+  private syscallMunmap(number: number): void {
+    const address = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI), 'munmap address');
+    const length = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RSI), 'munmap length');
+    if (length <= 0 || address % PAGE_SIZE !== 0) throw new Error('munmap requires a page-aligned address and non-zero length.');
+    const size = alignUp(length, PAGE_SIZE);
+    const mapping = this.dynamicMappings.get(address);
+    if (!mapping || mapping.kind !== 'mmap' || mapping.size !== size) {
+      throw new Error(`munmap currently requires an exact anonymous mmap region; 0x${address.toString(16)} + ${size} bytes was not found.`);
+    }
+    this.engine.mem_unmap(address, size);
+    this.dynamicMappings.delete(address);
+    this.releaseMapping(size);
+    this.setSyscallResult(0);
+    this.recordSyscall(number, 'munmap', `address=0x${address.toString(16)}, length=${length}`);
+  }
+
+  private syscallMprotect(number: number): void {
+    const address = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI), 'mprotect address');
+    const length = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RSI), 'mprotect length');
+    const protection = Number(this.engine.reg_read_i64(this.unicorn.X86_REG_RDX));
+    if (length <= 0 || address % PAGE_SIZE !== 0) throw new Error('mprotect requires a page-aligned address and non-zero length.');
+    const size = alignUp(length, PAGE_SIZE);
+    this.engine.mem_protect(address, size, linuxProtection(this.unicorn, protection));
+    this.setSyscallResult(0);
+    this.recordSyscall(number, 'mprotect', `address=0x${address.toString(16)}, length=${length}, prot=0x${protection.toString(16)}`);
+  }
+
+  private syscallArchPrctl(number: number): void {
+    const operation = Number(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI));
+    const address = this.engine.reg_read_i64(this.unicorn.X86_REG_RSI);
+    if (operation === ARCH_SET_FS) this.engine.reg_write_i64(this.unicorn.X86_REG_FS_BASE, address);
+    else if (operation === ARCH_SET_GS) this.engine.reg_write_i64(this.unicorn.X86_REG_GS_BASE, address);
+    else if (operation === ARCH_GET_FS) writeU64(this.engine, safeNumber(address, 'ARCH_GET_FS output'), this.engine.reg_read_i64(this.unicorn.X86_REG_FS_BASE));
+    else if (operation === ARCH_GET_GS) writeU64(this.engine, safeNumber(address, 'ARCH_GET_GS output'), this.engine.reg_read_i64(this.unicorn.X86_REG_GS_BASE));
+    else throw new Error(`arch_prctl operation 0x${operation.toString(16)} is not implemented.`);
+    this.setSyscallResult(0);
+    this.recordSyscall(number, 'arch_prctl', `op=0x${operation.toString(16)}, address=0x${address.toString(16)}`);
+  }
+
+  private syscallClockGettime(number: number): void {
+    const clockId = Number(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI));
+    const address = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RSI), 'clock_gettime output');
+    const monotonic = clockId === 1 || clockId === 4 || clockId === 6;
+    const milliseconds = monotonic && typeof performance !== 'undefined' ? performance.now() : Date.now();
+    writeTimespec(this.engine, address, milliseconds);
+    this.setSyscallResult(0);
+    this.recordSyscall(number, 'clock_gettime', `clock=${clockId}, address=0x${address.toString(16)}`);
+  }
+
   private virtualSyscall(nextRip: bigint): void {
     if (this.policy.syscallPolicy === 'none') {
       this.trap('Linux syscalls are disabled by execution policy.');
@@ -262,63 +462,76 @@ export class UnicornMachineSession {
     this.engine.reg_write_i64(this.unicorn.X86_REG_R11, this.engine.reg_read_i64(this.unicorn.X86_REG_RFLAGS));
     this.engine.reg_write_i64(this.unicorn.X86_REG_RIP, nextRip);
 
-    if (number === 60 || number === 231) {
-      const code = Number(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI) & 0xffn);
-      appendEvent(this.eventsValue, { kind: 'syscall', number, name: number === 60 ? 'exit' : 'exit_group', detail: `code=${code}` });
-      this.exitCodeValue = code;
-      this.statusValue = 'exited';
-      appendEvent(this.eventsValue, { kind: 'exit', code });
-      return;
-    }
+    try {
+      if (number === SYS_EXIT || number === SYS_EXIT_GROUP) {
+        const code = Number(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI) & 0xffn);
+        this.recordSyscall(number, number === SYS_EXIT ? 'exit' : 'exit_group', `code=${code}`);
+        this.exitCodeValue = code;
+        this.statusValue = 'exited';
+        appendEvent(this.eventsValue, { kind: 'exit', code });
+        return;
+      }
 
-    if (number === 1) {
-      const fd = Number(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI));
-      const address = this.engine.reg_read_i64(this.unicorn.X86_REG_RSI);
-      const count = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDX), 'write count');
-      if (count > MAX_IO_BYTES) {
-        this.trap(`write count ${count} exceeds the execution IO limit.`);
+      if (number === SYS_WRITE) {
+        const fd = Number(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI));
+        const address = this.engine.reg_read_i64(this.unicorn.X86_REG_RSI);
+        const count = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDX), 'write count');
+        if (count > MAX_IO_BYTES) throw new Error(`write count ${count} exceeds the execution IO limit.`);
+        if (fd !== 1 && fd !== 2) throw new Error(`write(fd=${fd}) is outside the virtual stdout/stderr contract.`);
+        const text = new TextDecoder().decode(this.engine.mem_read(address, count));
+        if (fd === 1) {
+          this.stdoutValue += text;
+          appendEvent(this.eventsValue, { kind: 'stdout', text });
+        } else {
+          this.stderrValue += text;
+          appendEvent(this.eventsValue, { kind: 'stderr', text });
+        }
+        this.recordSyscall(number, 'write', `fd=${fd}, count=${count}`);
+        this.setSyscallResult(count);
         return;
       }
-      if (fd !== 1 && fd !== 2) {
-        this.trap(`write(fd=${fd}) is outside the virtual stdout/stderr contract.`);
-        return;
-      }
-      const text = new TextDecoder().decode(this.engine.mem_read(address, count));
-      if (fd === 1) {
-        this.stdoutValue += text;
-        appendEvent(this.eventsValue, { kind: 'stdout', text });
-      } else {
-        this.stderrValue += text;
-        appendEvent(this.eventsValue, { kind: 'stderr', text });
-      }
-      appendEvent(this.eventsValue, { kind: 'syscall', number, name: 'write', detail: `fd=${fd}, count=${count}` });
-      this.engine.reg_write_i64(this.unicorn.X86_REG_RAX, BigInt(count));
-      return;
-    }
 
-    if (number === 0) {
-      const fd = Number(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI));
-      const address = this.engine.reg_read_i64(this.unicorn.X86_REG_RSI);
-      const count = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDX), 'read count');
-      if (fd !== 0) {
-        this.trap(`read(fd=${fd}) is outside the virtual stdin contract.`);
+      if (number === SYS_READ) {
+        const fd = Number(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI));
+        const address = this.engine.reg_read_i64(this.unicorn.X86_REG_RSI);
+        const count = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDX), 'read count');
+        if (fd !== 0) throw new Error(`read(fd=${fd}) is outside the virtual stdin contract.`);
+        if (count > MAX_IO_BYTES) throw new Error(`read count ${count} exceeds the execution IO limit.`);
+        const available = Math.max(0, Math.min(count, this.stdinBytes.length - this.stdinCursor));
+        if (available > 0) {
+          this.engine.mem_write(address, this.stdinBytes.subarray(this.stdinCursor, this.stdinCursor + available));
+          this.stdinCursor += available;
+        }
+        this.recordSyscall(number, 'read', `fd=0, count=${count}, returned=${available}`);
+        this.setSyscallResult(available);
         return;
       }
-      if (count > MAX_IO_BYTES) {
-        this.trap(`read count ${count} exceeds the execution IO limit.`);
-        return;
-      }
-      const available = Math.max(0, Math.min(count, this.stdinBytes.length - this.stdinCursor));
-      if (available > 0) {
-        this.engine.mem_write(address, this.stdinBytes.subarray(this.stdinCursor, this.stdinCursor + available));
-        this.stdinCursor += available;
-      }
-      appendEvent(this.eventsValue, { kind: 'syscall', number, name: 'read', detail: `fd=0, count=${count}, returned=${available}` });
-      this.engine.reg_write_i64(this.unicorn.X86_REG_RAX, BigInt(available));
-      return;
-    }
 
-    this.trap(`Linux syscall ${number} is not implemented by the Unicorn userspace-lite contract.`);
+      if (number === SYS_BRK) { this.syscallBrk(number); return; }
+      if (number === SYS_MMAP) { this.syscallMmap(number); return; }
+      if (number === SYS_MUNMAP) { this.syscallMunmap(number); return; }
+      if (number === SYS_MPROTECT) { this.syscallMprotect(number); return; }
+      if (number === SYS_ARCH_PRCTL) { this.syscallArchPrctl(number); return; }
+      if (number === SYS_CLOCK_GETTIME) { this.syscallClockGettime(number); return; }
+
+      if (number === SYS_GETPID || number === SYS_GETTID) {
+        this.setSyscallResult(1);
+        this.recordSyscall(number, number === SYS_GETPID ? 'getpid' : 'gettid', 'virtual-id=1');
+        return;
+      }
+
+      if (number === SYS_UNAME) {
+        const address = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI), 'uname output');
+        writeUtsName(this.engine, address);
+        this.setSyscallResult(0);
+        this.recordSyscall(number, 'uname', `address=0x${address.toString(16)}`);
+        return;
+      }
+
+      throw new Error(`Linux syscall ${number} is not implemented by the Unicorn userspace-lite contract.`);
+    } catch (cause) {
+      this.trap(cause instanceof Error ? cause.message : String(cause));
+    }
   }
 
   private trap(reason: string): void {
@@ -329,7 +542,7 @@ export class UnicornMachineSession {
   }
 
   private trapUnicorn(error: unknown): void {
-    if (this.statusValue === 'exited' || this.statusValue === 'halted' || this.statusValue === 'trapped') return;
+    if (terminal(this.statusValue)) return;
     let errno: number | null = null;
     let description: string | null = null;
     try {
@@ -365,10 +578,13 @@ export class UnicornMachineSession {
   }
 
   step(): ExecutionSnapshot {
-    if (this.statusValue === 'exited' || this.statusValue === 'halted' || this.statusValue === 'trapped') return this.snapshot();
+    if (terminal(this.statusValue)) return this.snapshot();
     this.statusValue = 'paused';
     this.runQuantum(1);
-    if (this.statusValue !== 'exited' && this.statusValue !== 'halted' && this.statusValue !== 'trapped') {
+    // TypeScript cannot infer side effects performed from the Unicorn hook inside
+    // emu_start(), so widen the post-quantum state deliberately before testing it.
+    const postStatus = this.statusValue as ExecutionStatus;
+    if (!terminal(postStatus)) {
       this.statusValue = 'paused';
       if (this.instructionCountValue >= this.policy.maxInstructions) this.trap(`Instruction budget exhausted at ${this.policy.maxInstructions} instructions.`);
     }
