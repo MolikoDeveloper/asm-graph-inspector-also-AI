@@ -18,7 +18,7 @@ try {
 
   assert.equal(report.architecture, 'x86-64');
   assert.equal(report.evidence, 'observed-unicorn-execution');
-  assert.equal(report.probes.length, 4);
+  assert.deepEqual(report.probes.map((probe) => probe.id), ['baseline', 'cpuid', 'xgetbv', 'sse2', 'avx', 'avx2']);
   assert.equal(report.probes.find((probe) => probe.id === 'baseline')?.supported, true, 'baseline must execute');
   assert.equal(report.probes.find((probe) => probe.id === 'sse2')?.supported, true, 'SSE2 must execute');
 
