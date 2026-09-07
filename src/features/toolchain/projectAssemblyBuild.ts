@@ -61,6 +61,15 @@ function defaultOutputProjectPath(sources: ProjectFile[]): string {
   return 'build/program';
 }
 
+function hex(bytes: Uint8Array): string {
+  return [...bytes].map((byte) => byte.toString(16).padStart(2, '0')).join('');
+}
+
+async function sourceSha256(file: ProjectFile): Promise<string> {
+  const bytes = new TextEncoder().encode(file.text ?? '');
+  return hex(new Uint8Array(await crypto.subtle.digest('SHA-256', bytes)));
+}
+
 export async function buildAssemblyProject(
   project: InspectorProject,
   backend: AssemblerBackend,
@@ -104,6 +113,12 @@ export async function buildAssemblyProject(
   const assembly = await backend.assemble(request);
   if (!assembly.success || !assembly.artifact) return { assembly, sourceFiles, generatedFile: null };
 
+  const sourceRevisions = await Promise.all(sourceFiles.map(async (file) => ({
+    fileId: file.id,
+    updatedAt: file.updatedAt,
+    size: file.size,
+    sha256: await sourceSha256(file)
+  })));
   const bytes = exactArrayBuffer(assembly.artifact.bytes);
   const builtAt = Date.now();
   const generatedFile: ProjectFile = {
@@ -119,7 +134,7 @@ export async function buildAssemblyProject(
       kind: 'assembly-build',
       backendId: backend.id,
       sourceFileIds: sourceFiles.map((file) => file.id),
-      sourceRevisions: sourceFiles.map((file) => ({ fileId: file.id, updatedAt: file.updatedAt, size: file.size })),
+      sourceRevisions,
       artifactKind: assembly.artifact.kind,
       builtAt
     }
