@@ -3,7 +3,12 @@ import { loadCapstone } from '../capstone/capstoneLoader';
 import { AsmSourceExecutionSession, asmSourceExecutionSupport } from './asmSourceSession';
 import { DEFAULT_EXECUTION_POLICY, type ExecutionSnapshot, type ExecutionSupport, type ExecutionTarget } from './model';
 import { BlinkProcessSession } from './blinkProcessSession';
-import { auditBlinkIsaForFile, describeBlinkIsaAuditFailure } from './blinkIsaPreflight';
+import {
+  auditBlinkIsaForFile,
+  describeBlinkIsaAuditFailure,
+  idleBlinkIsaPreflight,
+  type BlinkIsaPreflightState
+} from './blinkIsaPreflight';
 import { executionSupport, X86ExecutionSession } from './session';
 import { registerActiveExecutionInputSink } from './activeInput';
 import { appendExecutionStdin } from './stdinQueue';
@@ -57,6 +62,7 @@ function nextFrame(): Promise<void> {
 
 export function useExecutionController() {
   const [snapshot, setSnapshot] = useState<ExecutionSnapshot>(IDLE_SNAPSHOT);
+  const [preflight, setPreflight] = useState<BlinkIsaPreflightState>(() => idleBlinkIsaPreflight());
   const sessionRef = useRef<BrowserExecutionSession | null>(null);
   const runGeneration = useRef(0);
 
@@ -73,17 +79,66 @@ export function useExecutionController() {
     if (!force && current && sameTarget(current, target)) return current;
     const generation = ++runGeneration.current;
     current?.dispose();
+    let isaAuditStarted = false;
+    let isaAuditFinished = false;
+    let isaAuditStartedAt = 0;
+
     try {
       const support = executionSupportForTarget(target);
       if (!support.supported || !support.provider) throw new Error(support.reasons.join(' '));
       let session: BrowserExecutionSession;
       if (target.kind === 'asm-source') {
+        setPreflight(idleBlinkIsaPreflight());
         session = new AsmSourceExecutionSession(target.file, target.source, DEFAULT_EXECUTION_POLICY);
       } else if (support.provider === 'blink-process') {
-        const isaAudit = await auditBlinkIsaForFile(target.file);
-        if (!isaAudit.compatible) throw new Error(describeBlinkIsaAuditFailure(target.file.name, isaAudit));
+        isaAuditStarted = true;
+        isaAuditStartedAt = performance.now();
+        setPreflight({
+          ...idleBlinkIsaPreflight(),
+          status: 'scanning',
+          targetFileId: target.file.id,
+          targetName: target.file.name,
+          elapsedMs: 0
+        });
+        const isaAudit = await auditBlinkIsaForFile(target.file, {
+          onProgress: (progress) => {
+            if (runGeneration.current !== generation) return;
+            setPreflight({
+              status: 'scanning',
+              targetFileId: target.file.id,
+              targetName: target.file.name,
+              elapsedMs: Math.max(0, performance.now() - isaAuditStartedAt),
+              scannedInstructions: progress.scannedInstructions,
+              processedBytes: progress.processedBytes,
+              totalBytes: progress.totalBytes,
+              unsupportedFamilies: progress.unsupportedFamilies,
+              evidence: progress.evidence,
+              message: progress.unsupportedFamilies.length
+                ? `Detected unsupported ISA evidence while scanning ${target.file.name}; the complete executable-byte audit will finish before launch.`
+                : null
+            });
+          }
+        });
+        if (runGeneration.current !== generation) return null;
+        isaAuditFinished = true;
+        const elapsedMs = Math.max(0, performance.now() - isaAuditStartedAt);
+        const failure = isaAudit.compatible ? null : describeBlinkIsaAuditFailure(target.file.name, isaAudit);
+        setPreflight({
+          status: isaAudit.compatible ? 'compatible' : 'incompatible',
+          targetFileId: target.file.id,
+          targetName: target.file.name,
+          elapsedMs,
+          scannedInstructions: isaAudit.scannedInstructions,
+          processedBytes: isaAudit.decodedBytes + isaAudit.skippedBytes,
+          totalBytes: isaAudit.decodedBytes + isaAudit.skippedBytes,
+          unsupportedFamilies: isaAudit.unsupportedFamilies,
+          evidence: isaAudit.evidence,
+          message: failure
+        });
+        if (failure) throw new Error(failure);
         session = await BlinkProcessSession.create(target.file, target.image, DEFAULT_EXECUTION_POLICY);
       } else {
+        setPreflight(idleBlinkIsaPreflight());
         session = new X86ExecutionSession(target.file, target.image, await loadCapstone(), DEFAULT_EXECUTION_POLICY);
       }
       if (runGeneration.current !== generation) {
@@ -95,8 +150,19 @@ export function useExecutionController() {
       return session;
     } catch (error: unknown) {
       if (runGeneration.current !== generation) return null;
+      const reason = error instanceof Error ? error.message : String(error);
+      if (isaAuditStarted && !isaAuditFinished) {
+        setPreflight((currentPreflight) => ({
+          ...currentPreflight,
+          status: 'error',
+          targetFileId: target.file.id,
+          targetName: target.file.name,
+          elapsedMs: Math.max(0, performance.now() - isaAuditStartedAt),
+          message: `Blink ISA preflight failed: ${reason}`
+        }));
+      }
       sessionRef.current = null;
-      setSnapshot(failedSnapshot(target, error instanceof Error ? error.message : String(error)));
+      setSnapshot(failedSnapshot(target, reason));
       return null;
     }
   }, []);
@@ -145,7 +211,8 @@ export function useExecutionController() {
     sessionRef.current?.dispose();
     sessionRef.current = null;
     setSnapshot(IDLE_SNAPSHOT);
+    setPreflight(idleBlinkIsaPreflight());
   }, []);
 
-  return { snapshot, prepare, step, run, pause, reset, clear };
+  return { snapshot, preflight, prepare, step, run, pause, reset, clear };
 }
