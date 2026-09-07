@@ -1,9 +1,11 @@
-import { useCallback, useRef, useState } from 'react';
+import { useCallback, useEffect, useRef, useState } from 'react';
 import { loadCapstone } from '../capstone/capstoneLoader';
 import { AsmSourceExecutionSession, asmSourceExecutionSupport } from './asmSourceSession';
 import { DEFAULT_EXECUTION_POLICY, type ExecutionSnapshot, type ExecutionSupport, type ExecutionTarget } from './model';
 import { BlinkProcessSession } from './blinkProcessSession';
 import { executionSupport, X86ExecutionSession } from './session';
+import { registerActiveExecutionInputSink } from './activeInput';
+import { appendExecutionStdin } from './stdinQueue';
 
 type BrowserExecutionSession = X86ExecutionSession | AsmSourceExecutionSession | BlinkProcessSession;
 
@@ -56,6 +58,14 @@ export function useExecutionController() {
   const [snapshot, setSnapshot] = useState<ExecutionSnapshot>(IDLE_SNAPSHOT);
   const sessionRef = useRef<BrowserExecutionSession | null>(null);
   const runGeneration = useRef(0);
+
+  useEffect(() => registerActiveExecutionInputSink((text) => {
+    const session = sessionRef.current;
+    if (!session) return false;
+    const appended = appendExecutionStdin(session, text);
+    if (appended) setSnapshot(session.snapshot());
+    return appended;
+  }), []);
 
   const createSession = useCallback(async (target: ExecutionTarget, force = false): Promise<BrowserExecutionSession | null> => {
     const current = sessionRef.current;
