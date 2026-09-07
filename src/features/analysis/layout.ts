@@ -7,15 +7,15 @@ export interface PositionedGraphNode extends GraphNode {
   height: number;
 }
 
-const CFG_BLOCK_WIDTH = 264;
-const CFG_COLUMN_GAP = 54;
-const CFG_ROW_GAP = 72;
-const CFG_MAX_VISIBLE_INSTRUCTIONS = 6;
+const CFG_BLOCK_WIDTH = 292;
+const CFG_COLUMN_GAP = 72;
+const CFG_ROW_GAP = 88;
+const CFG_MAX_VISIBLE_INSTRUCTIONS = 8;
 
 function functionCfgBlockHeight(node: GraphNode): number {
   const count = Math.min(CFG_MAX_VISIBLE_INSTRUCTIONS, node.blockInstructions?.length ?? 0);
   const overflow = (node.blockInstructions?.length ?? 0) > CFG_MAX_VISIBLE_INSTRUCTIONS;
-  return 42 + count * 17 + (overflow ? 16 : 0) + 12;
+  return 49 + count * 18 + (overflow ? 18 : 0) + 14;
 }
 
 function layoutFunctionCfg(graph: AnalysisGraph): PositionedGraphNode[] {
@@ -76,12 +76,12 @@ function layoutFunctionCfg(graph: AnalysisGraph): PositionedGraphNode[] {
   const canvasWidth = maxColumns * CFG_BLOCK_WIDTH + Math.max(0, maxColumns - 1) * CFG_COLUMN_GAP;
   const result: PositionedGraphNode[] = [];
   const blockPosition = new Map<string, PositionedGraphNode>();
-  let y = 48;
+  let y = 54;
 
   for (const layer of [...byDepth.keys()].sort((a, b) => a - b)) {
     const list = byDepth.get(layer)!;
     const rowWidth = list.length * CFG_BLOCK_WIDTH + Math.max(0, list.length - 1) * CFG_COLUMN_GAP;
-    const rowX = 64 + (canvasWidth - rowWidth) * 0.5;
+    const rowX = 86 + (canvasWidth - rowWidth) * 0.5;
     const rowHeight = Math.max(...list.map(functionCfgBlockHeight));
 
     for (let index = 0; index < list.length; index += 1) {
@@ -100,21 +100,21 @@ function layoutFunctionCfg(graph: AnalysisGraph): PositionedGraphNode[] {
   }
 
   if (references.length) {
-    const referenceX = 64 + canvasWidth + 94;
+    const referenceX = 86 + canvasWidth + 116;
     const occupiedRows = new Map<number, number>();
     for (const node of references) {
       const incoming = graph.edges.find((edge) => edge.to === node.id);
       const source = incoming ? blockPosition.get(incoming.from) : null;
-      const preferredY = source?.y ?? 48;
-      const row = Math.max(0, Math.round((preferredY - 48) / 58));
+      const preferredY = source?.y ?? 54;
+      const row = Math.max(0, Math.round((preferredY - 54) / 66));
       const collision = occupiedRows.get(row) ?? 0;
       occupiedRows.set(row, collision + 1);
       result.push({
         ...node,
-        x: referenceX + collision * 220,
-        y: 48 + row * 58,
-        width: 196,
-        height: 46
+        x: referenceX + collision * 244,
+        y: 54 + row * 66,
+        width: 220,
+        height: 52
       });
     }
   }
@@ -198,13 +198,13 @@ function layoutProgramFlow(graph: AnalysisGraph): PositionedGraphNode[] {
       const isGroup = node.kind === 'label';
       result.push({
         ...node,
-        x: 56 + column * 282,
-        y: yBase + row * 78,
-        width: isGroup ? 220 : 252,
-        height: isGroup ? 50 : 56
+        x: 56 + column * 296,
+        y: yBase + row * 84,
+        width: isGroup ? 226 : 264,
+        height: isGroup ? 52 : 60
       });
     }
-    yBase += Math.max(1, rows) * 78 + 58;
+    yBase += Math.max(1, rows) * 84 + 62;
   }
   return result;
 }
