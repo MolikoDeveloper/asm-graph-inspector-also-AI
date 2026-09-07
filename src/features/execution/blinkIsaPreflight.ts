@@ -263,5 +263,5 @@ export function describeBlinkIsaAuditFailure(fileName: string, audit: BlinkIsaAu
     ? ` Capstone skipped ${audit.skippedBytes.toLocaleString()} executable byte(s); the rejection is based only on positively decoded unsupported instructions.`
     : '';
 
-  return `${fileName} is incompatible with Blink profile ${audit.profile}. Executable bytes require ${families}.${firstInstruction}${skipped} ELF ISA notes are advisory here; execution compatibility is decided from authoritative executable PT_LOAD bytes decoded by Capstone. Rebuild the guest for portable x86-64 baseline (for Zig/VZed, use an explicit baseline CPU target rather than native CPU features).`;
+  return `${fileName} is incompatible with Blink profile ${audit.profile}. Executable bytes require ${families}.${firstInstruction}${skipped} ELF ISA notes are advisory here; execution compatibility is decided from authoritative executable PT_LOAD bytes decoded by Capstone. This is producer-agnostic: rebuild or select an artifact whose machine-code ISA is within the advertised sandbox CPU profile, regardless of which compiler, assembler, linker, language or build system produced it.`;
 }
