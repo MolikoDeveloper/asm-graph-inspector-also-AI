@@ -88,12 +88,14 @@ Normal UI execution no longer constructs an `asm-source` execution target. F6/F1
 
 ## Checkpoint 6 — CFG and runtime-follow unification
 
-- [ ] Make ELF bytes + Capstone the authoritative source for binary CFG construction.
-- [ ] Keep Function CFG and Program Flow/Call Graph as distinct graph products.
-- [ ] Resolve each stepped RIP to the owning loaded image, including `ld-linux`, libc and other Global Dependencies.
-- [ ] Auto-scroll and highlight the current instruction in binary disassembly after Step.
-- [ ] Project execution counts/edges onto CFG using executed instructions only; never count skipped instructions.
-- [ ] Render execution count as `×N`, not `+N`.
+- [x] Make ELF bytes + Capstone the authoritative source for binary CFG construction.
+- [x] Keep Function CFG and Program Flow/Call Graph as distinct graph products.
+- [x] Resolve each stepped RIP to the owning loaded image, including `ld-linux`, libc and other Global Dependencies.
+- [x] Auto-scroll and highlight the current instruction in binary disassembly after Step.
+- [x] Project execution counts/edges onto CFG using executed instructions only; never count skipped instructions.
+- [x] Render execution count as `×N`, not `+N`.
+
+Blink Step now indexes the main executable plus the materialized `PT_INTERP`/recursive `DT_NEEDED` closure as executable runtime images. Fixed-address `ET_EXEC` mappings use their canonical image addresses directly; relocated images infer and cache load bias only from a unique multi-instruction byte signature in Blink's live debugger window, and ambiguous signatures fail closed. The live view exposes the owning image, role, runtime address, image-relative address and load bias without replacing static ELF + Capstone evidence. Only actually stepped instructions that resolve to the program image become CFG trace events. Leaving the program for the loader or a shared library emits a trace discontinuity, so returning to the program cannot fabricate a CFG edge across library execution. Static editor/CFG follow likewise refuses to project dependency RIPs into the main executable.
 
 ## Checkpoint 7 — text dump classification/import
 
