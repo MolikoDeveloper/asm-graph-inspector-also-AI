@@ -26,6 +26,46 @@ export interface BlinkIsaAudit {
   evidence: BlinkIsaEvidence[];
 }
 
+export interface BlinkIsaAuditProgress {
+  scannedInstructions: number;
+  processedBytes: number;
+  totalBytes: number;
+  decodedBytes: number;
+  skippedBytes: number;
+  unsupportedFamilies: BlinkUnsupportedIsaFamily[];
+  evidence: BlinkIsaEvidence[];
+}
+
+export type BlinkIsaPreflightStatus = 'idle' | 'scanning' | 'compatible' | 'incompatible' | 'error';
+
+export interface BlinkIsaPreflightState {
+  status: BlinkIsaPreflightStatus;
+  targetFileId: string | null;
+  targetName: string | null;
+  elapsedMs: number | null;
+  scannedInstructions: number;
+  processedBytes: number;
+  totalBytes: number;
+  unsupportedFamilies: BlinkUnsupportedIsaFamily[];
+  evidence: BlinkIsaEvidence[];
+  message: string | null;
+}
+
+export function idleBlinkIsaPreflight(): BlinkIsaPreflightState {
+  return {
+    status: 'idle',
+    targetFileId: null,
+    targetName: null,
+    elapsedMs: null,
+    scannedInstructions: 0,
+    processedBytes: 0,
+    totalBytes: 0,
+    unsupportedFamilies: [],
+    evidence: [],
+    message: null
+  };
+}
+
 const LEGACY_V_MNEMONICS = new Set(['verr', 'verw']);
 const VMX_MNEMONICS = new Set([
   'vmcall',
@@ -119,26 +159,44 @@ function nextFrame(): Promise<void> {
  * This intentionally does not trust section headers or GNU ISA notes: stripped
  * binaries and stale metadata must not bypass the compatibility gate.
  */
-export async function auditBlinkIsaForFile(file: ProjectFile, maxEvidence = 12): Promise<BlinkIsaAudit> {
+export async function auditBlinkIsaForFile(
+  file: ProjectFile,
+  options: { maxEvidence?: number; onProgress?: (progress: BlinkIsaAuditProgress) => void } = {}
+): Promise<BlinkIsaAudit> {
   if (file.kind !== 'binary' || !file.bytes) throw new Error('Blink ISA preflight requires authoritative binary bytes.');
 
+  const maxEvidence = options.maxEvidence ?? 12;
   const image = parseElfImage(file.id, file.path, file.bytes);
   const capstone = await loadCapstone();
   const families = new Set<BlinkUnsupportedIsaFamily>();
   const evidence: BlinkIsaEvidence[] = [];
   const segments = image.segments.filter((segment) => segment.executable && segment.fileSize > 0).sort((left, right) => left.virtualAddress - right.virtualAddress);
+  const totalBytes = segments.reduce((sum, segment) => sum + segment.fileSize, 0);
   const chunkSize = 96 * 1024;
   let scannedInstructions = 0;
+  let processedBytes = 0;
   let decodedBytes = 0;
   let skippedBytes = 0;
   let chunks = 0;
 
+  const report = () => options.onProgress?.({
+    scannedInstructions,
+    processedBytes,
+    totalBytes,
+    decodedBytes,
+    skippedBytes,
+    unsupportedFamilies: [...families],
+    evidence: evidence.slice()
+  });
+
+  report();
   for (const segment of segments) {
     let cursor = segment.virtualAddress;
     const end = segment.virtualAddress + segment.fileSize;
     const segmentLabel = `PT_LOAD#${segment.index}`;
 
     while (cursor < end) {
+      const before = cursor;
       const requested = Math.min(chunkSize, end - cursor);
       const bytes = executableBytesForRange(image, file.bytes, cursor, requested);
       const decoded = decodeX86_64(capstone, bytes, cursor, { maxInstructions: 32768 });
@@ -164,6 +222,8 @@ export async function auditBlinkIsaForFile(file: ProjectFile, maxEvidence = 12):
         decodedBytes += advanced;
       }
 
+      processedBytes += Math.max(0, cursor - before);
+      report();
       chunks += 1;
       if (chunks % 4 === 0) await nextFrame();
     }
