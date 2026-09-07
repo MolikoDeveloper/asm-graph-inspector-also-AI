@@ -53,6 +53,9 @@ jobs:
       - name: Toolchain tests
         run: bun run test:toolchain
 
+      - name: Import classification tests
+        run: bun run test:import
+
       - name: Execution tests
         run: bun run test:execution
 
