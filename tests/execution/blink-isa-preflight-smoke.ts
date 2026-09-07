@@ -55,6 +55,8 @@ assert(audit.evidence[0]?.address === 0x49c038, 'first unsupported evidence shou
 
 const message = describeBlinkIsaAuditFailure('ray_test', audit);
 assert(message.includes('0x49c038 vbroadcastss'), 'diagnostic should expose the first unsupported instruction');
+assert(message.includes('static unsupported instruction'), 'diagnostic must distinguish static compatibility evidence from an observed runtime failure');
+assert(message.includes('not observed execution'), 'diagnostic must not claim the first static match was executed');
 assert(message.includes('x86-64-baseline'), 'diagnostic should name the pinned Blink baseline profile');
 assert(message.includes('authoritative executable PT_LOAD bytes decoded by Capstone'), 'diagnostic should explain the evidence source');
 assert(message.includes('baseline CPU target'), 'diagnostic should recommend portable guest generation');
