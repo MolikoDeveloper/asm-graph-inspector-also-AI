@@ -5,6 +5,7 @@ import { useBlinkIsaPreflightMonitor } from '../features/execution/blinkIsaPrefl
 import type { ExecutionSnapshot, ExecutionSupport } from '../features/execution/model';
 import { InspectorTerminal, type InspectorTerminalCommandResult } from './InspectorTerminal';
 import { RuntimeDiagnostics } from './RuntimeDiagnostics';
+import './BottomPanel.css';
 
 export interface OutputEntry {
   id: string;
