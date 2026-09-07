@@ -55,13 +55,17 @@ The pinned Blink browser bridge tokenizes its argument string on spaces and curr
 
 ## Checkpoint 3 — real NASM + GNU ld toolchain
 
-- [ ] Vendor or otherwise reproducibly provide x86-64 Linux NASM for the tool session.
-- [ ] Vendor or reproducibly provide the minimum GNU binutils/`ld` tool payload required for ELF64 linking.
-- [ ] Assemble `hello_world.asm` to `ET_REL` with `nasm -f elf64`.
-- [ ] Link the object to an `ET_EXEC` ELF with `_start` as entry.
-- [ ] Verify the resulting ELF using the existing ELF parser and Capstone path.
-- [ ] Run the generated ELF through the binary execution API with stdout + exit(0).
-- [ ] Support multiple ASM source files by assembling independently and linking the resulting objects together.
+- [x] Reproducibly provide x86-64 Linux NASM 3.00 from an exact upstream commit/blob identity.
+- [x] Reproducibly provide GNU ld 2.43.50 from the same pinned upstream toolchain source.
+- [x] Assemble `hello-world.asm` to `ET_REL` with real `nasm -f elf64` in CI.
+- [x] Link the object to an `ET_EXEC` ELF with `_start` as entry using real GNU ld.
+- [x] Verify the resulting ELF using the existing ELF parser and Capstone-backed binary execution path.
+- [x] Run the generated ELF through the binary execution API and assert exact stdout + exit(0).
+- [x] Support multiple ASM source files by assembling independently and linking the resulting objects together.
+- [x] Expose `createPinnedNasmLdAssemblerBackend()` to bind verified real tool assets to `BlinkToolProcessRunner` in the browser.
+- [ ] Add a real browser E2E that executes the pinned NASM + GNU ld binaries through Blink itself (the runner has deterministic fake-Blink coverage and the actual tool binaries are independently executed/verified in CI today).
+
+Generated NASM/GNU ld binaries are not committed. `bun run vendor:toolchain` fetches exact files from `robalb/x86-64-playground@d617f6a19879157c1debbe0454b6c4cff2ebe094`, verifies byte length + Git blob identity, and places them under `public/vendor/toolchain` for same-origin browser loading and Pages deployment.
 
 ## Checkpoint 4 — project integration
 
