@@ -135,11 +135,12 @@ The large imported `ray_test` regression proved that ELF ISA notes are not suffi
 - [x] Surface ISA preflight progress/result explicitly in Debug Console, including executable-byte progress, decoded instruction count, detected ISA families, first evidence addresses and elapsed time.
 - [ ] Audit executable bytes of the materialized interpreter and recursive Global Dependencies as well as the main guest image; dependency AVX must be treated carefully because glibc IFUNC libraries can legitimately contain optional dispatched implementations.
 - [x] Parse GNU `DT_VERNEED` / `DT_VERDEF` symbol-version metadata directly from file-backed dynamic ELF data without depending on section headers.
-- [ ] Validate the selected Global Dependencies against those GNU symbol-version requirements before Blink launch.
+- [x] Validate the selected Global Dependencies against those GNU symbol-version requirements before Blink launch.
+- [x] Prepare the `PT_INTERP` + recursive `DT_NEEDED` runtime environment exactly once per Blink launch, validate that exact closure, and pass the same selected module bytes into `BlinkProcessSession` without a second dependency walk.
 - [x] Add a compact real ELF regression fixture assembled and linked by the pinned NASM + GNU ld toolchain whose actual bytes contain VEX/AVX instructions, then prove Capstone classifies the entry instruction as unsupported.
 - [ ] Add a browser/controller E2E proving that an unsupported real ELF is rejected before `BlinkProcessSession.create()` starts.
 - [x] Keep user-visible compatibility diagnostics producer agnostic; do not prescribe Zig/VZed/NASM/GCC/Clang-specific flags from the execution core.
-- [ ] Define a generic artifact compatibility report covering machine architecture, ELF class/endianness, CPU ISA, interpreter, dependency closure, required symbol versions, unsupported syscalls/environment services and observed runtime traps.
+- [x] Define a generic artifact compatibility report covering machine architecture, ELF class/endianness, CPU ISA, interpreter, dependency closure, required symbol versions, unsupported syscalls/environment services and observed runtime traps.
 - [ ] Allow optional producer-specific remediation hints only as an extension layer when producer metadata is positively identified; the core compatibility verdict must remain based on artifact/runtime evidence.
 - [ ] Add imported-binary regression fixtures from multiple unrelated producers/toolchains and prove they all enter the same `ELF -> dependencies -> Blink` path.
 - [ ] Keep the large `ray_test` as one regression fixture proving that producer identity does not affect compatibility analysis or execution routing.
