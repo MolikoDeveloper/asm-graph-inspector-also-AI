@@ -4,6 +4,7 @@ import { currentCapstone } from '../capstone/capstoneLoader';
 import type { ProjectFile } from '../project/model';
 import { blinkUnsupportedIsaFamily } from './blinkIsaPreflight';
 import type { ExecutionCrashSnapshot, ExecutionRegisterSnapshot } from './model';
+import type { RuntimeImageMatch } from './runtimeImageResolver';
 
 const X86_MAX_INSTRUCTION_BYTES = 15;
 
@@ -71,24 +72,55 @@ function fixedProgramBytes(file: ProjectFile, image: LoadedImage, runtimeAddress
   };
 }
 
+export interface BlinkFatalSignalEvidence {
+  /** Bytes observed directly from Blink guest memory at architectural RIP. */
+  runtimeCodeBytes?: readonly number[];
+  /** Unique image/load-bias match proven from those observed bytes. */
+  runtimeImage?: RuntimeImageMatch | null;
+}
+
 export function captureBlinkFatalSignal(
   file: ProjectFile,
   image: LoadedImage,
   signal: number,
   signalCode: number,
-  registers: ExecutionRegisterSnapshot | null
+  registers: ExecutionRegisterSnapshot | null,
+  evidence: BlinkFatalSignalEvidence = {}
 ): ExecutionCrashSnapshot {
   const runtimeAddress = registers?.rip ?? null;
+  const observedBytes = evidence.runtimeCodeBytes?.slice(0, X86_MAX_INSTRUCTION_BYTES) ?? [];
+  const matchedImage = evidence.runtimeImage ?? null;
   const fixed = runtimeAddress === null ? null : fixedProgramBytes(file, image, runtimeAddress);
+
+  const imageAddressBig = matchedImage?.imageAddress
+    ?? (fixed ? BigInt(fixed.imageAddress) : null);
+  const decodeAddress = imageAddressBig !== null
+    ? safeAddress(imageAddressBig)
+    : runtimeAddress !== null ? safeAddress(runtimeAddress) : null;
+  const codeBytes = observedBytes.length ? [...observedBytes] : fixed?.codeBytes ?? [];
+
+  let functionName: string | null = null;
+  let functionOffset: number | null = null;
+  if (matchedImage?.role === 'program' && imageAddressBig !== null) {
+    const canonicalAddress = safeAddress(imageAddressBig);
+    if (canonicalAddress !== null) {
+      const symbol = containingFunction(image, canonicalAddress);
+      functionName = symbol?.name || null;
+      functionOffset = symbol ? canonicalAddress - symbol.value : null;
+    }
+  } else if (!matchedImage && fixed) {
+    functionName = fixed.functionName;
+    functionOffset = fixed.functionOffset;
+  }
+
   let instruction: ExecutionCrashSnapshot['instruction'] = null;
   let isaFamily: string | null = null;
-
-  if (fixed && fixed.codeBytes.length) {
+  if (decodeAddress !== null && codeBytes.length) {
     const capstone = currentCapstone();
     if (capstone) {
       try {
-        const decoded = decodeX86_64(capstone, Uint8Array.from(fixed.codeBytes), fixed.imageAddress, { maxInstructions: 1 })[0] ?? null;
-        if (decoded && decoded.address === fixed.imageAddress) {
+        const decoded = decodeX86_64(capstone, Uint8Array.from(codeBytes), decodeAddress, { maxInstructions: 1 })[0] ?? null;
+        if (decoded && decoded.address === decodeAddress) {
           instruction = {
             address: decoded.address,
             endAddress: decoded.endAddress,
@@ -99,8 +131,9 @@ export function captureBlinkFatalSignal(
           isaFamily = blinkUnsupportedIsaFamily(decoded);
         }
       } catch {
-        // Signal/register evidence remains authoritative even if secondary
-        // Capstone decoding fails. Do not replace an observed RIP with a guess.
+        // Signal/register/observed-byte evidence remains authoritative even if
+        // secondary Capstone decoding fails. Do not replace an observed RIP or
+        // uniquely proven runtime image with a guessed instruction.
       }
     }
   }
@@ -111,13 +144,13 @@ export function captureBlinkFatalSignal(
     signalCode,
     exitCode: 128 + signal,
     runtimeAddress,
-    imageName: fixed ? file.name : null,
-    imageRole: fixed ? 'program' : null,
-    imageAddress: fixed ? BigInt(fixed.imageAddress) : null,
-    loadBias: fixed ? 0n : null,
-    functionName: fixed?.functionName ?? null,
-    functionOffset: fixed?.functionOffset ?? null,
-    codeBytes: fixed?.codeBytes ?? [],
+    imageName: matchedImage?.name ?? (fixed ? file.name : null),
+    imageRole: matchedImage?.role ?? (fixed ? 'program' : null),
+    imageAddress: imageAddressBig,
+    loadBias: matchedImage?.loadBias ?? (fixed ? 0n : null),
+    functionName,
+    functionOffset,
+    codeBytes,
     instruction,
     isaFamily,
     evidence: 'blink-headless-signal-clstruct'
@@ -139,7 +172,7 @@ export function describeBlinkFatalSignal(crash: ExecutionCrashSnapshot): string 
   const instruction = crash.instruction
     ? ` Instruction: ${crash.instruction.mnemonic}${crash.instruction.operands ? ` ${crash.instruction.operands}` : ''} [${bytesLabel(crash.instruction.bytes)}].`
     : crash.codeBytes.length
-      ? ` Code bytes at RIP: [${bytesLabel(crash.codeBytes)}].`
+      ? ` Observed code bytes at RIP: [${bytesLabel(crash.codeBytes)}].`
       : '';
   const isa = crash.isaFamily ? ` Decoded ISA family: ${crash.isaFamily}.` : '';
   return `Blink guest terminated by ${crash.signalName} (signal ${crash.signal}, code ${crash.signalCode}, exit ${crash.exitCode})${at}${image}${fn}.${instruction}${isa}`;
