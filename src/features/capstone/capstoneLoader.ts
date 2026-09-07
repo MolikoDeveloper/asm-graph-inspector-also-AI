@@ -3,6 +3,7 @@ import type { CapstoneModule } from './types';
 export type CapstoneStatus = 'idle' | 'loading' | 'ready' | 'error';
 
 let modulePromise: Promise<CapstoneModule> | null = null;
+let loadedModule: CapstoneModule | null = null;
 
 function assetUrl(relative: string): string {
   return new URL(`${import.meta.env.BASE_URL}${relative}`, window.location.href).href;
@@ -38,14 +39,26 @@ export async function loadCapstone(): Promise<CapstoneModule> {
       await loadScriptOnce();
       if (!window.MCapstone) throw new Error('Capstone module factory was not registered');
       const wasmUrl = assetUrl('vendor/capstone/capstone_x86.wasm');
-      return window.MCapstone({
+      const module = await window.MCapstone({
         locateFile: (path) => path.endsWith('.wasm') ? wasmUrl : path
       });
+      loadedModule = module;
+      return module;
     })();
   }
   return modulePromise;
 }
 
+/**
+ * Returns the already initialized module without starting an async load.
+ * Blink process execution always runs the ISA preflight first, so this is
+ * available when a headless signal callback needs to decode the exact RIP.
+ */
+export function currentCapstone(): CapstoneModule | null {
+  return loadedModule;
+}
+
 export function resetCapstoneLoader(): void {
   modulePromise = null;
+  loadedModule = null;
 }
