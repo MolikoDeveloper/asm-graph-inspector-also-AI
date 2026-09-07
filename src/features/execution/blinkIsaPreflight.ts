@@ -1,4 +1,7 @@
-import { loadFullBinaryDisassembly, type BinaryDisassemblyDocument, type BinaryDisassemblyLine } from '../analysis/binaryDisassembly';
+import type { BinaryDisassemblyDocument, BinaryDisassemblyLine } from '../analysis/binaryDisassembly';
+import { executableBytesForRange, parseElfImage } from '../binary/elfParser';
+import { loadCapstone } from '../capstone/capstoneLoader';
+import { decodeX86_64 } from '../capstone/capstoneDecoder';
 import type { ProjectFile } from '../project/model';
 import { REQUIRED_BLINK_BUILD_PROFILE } from './blinkBuildProfile';
 
@@ -69,25 +72,31 @@ export function blinkUnsupportedIsaFamily(line: Pick<BinaryDisassemblyLine, 'byt
   return null;
 }
 
+function addEvidence(
+  families: Set<BlinkUnsupportedIsaFamily>,
+  evidence: BlinkIsaEvidence[],
+  line: Pick<BinaryDisassemblyLine, 'address' | 'bytes' | 'mnemonic' | 'operands' | 'sectionName'>,
+  maxEvidence: number
+): void {
+  const family = blinkUnsupportedIsaFamily(line);
+  if (!family) return;
+  families.add(family);
+  if (evidence.length >= maxEvidence) return;
+  evidence.push({
+    family,
+    address: line.address,
+    mnemonic: line.mnemonic,
+    operands: line.operands,
+    bytes: line.bytes.slice(),
+    sectionName: line.sectionName
+  });
+}
+
 export function auditBlinkIsaDocument(document: BinaryDisassemblyDocument, maxEvidence = 12): BlinkIsaAudit {
   const families = new Set<BlinkUnsupportedIsaFamily>();
   const evidence: BlinkIsaEvidence[] = [];
 
-  for (const line of document.lines) {
-    const family = blinkUnsupportedIsaFamily(line);
-    if (!family) continue;
-    families.add(family);
-    if (evidence.length < maxEvidence) {
-      evidence.push({
-        family,
-        address: line.address,
-        mnemonic: line.mnemonic,
-        operands: line.operands,
-        bytes: line.bytes.slice(),
-        sectionName: line.sectionName
-      });
-    }
-  }
+  for (const line of document.lines) addEvidence(families, evidence, line, maxEvidence);
 
   return {
     compatible: families.size === 0,
@@ -100,9 +109,75 @@ export function auditBlinkIsaDocument(document: BinaryDisassemblyDocument, maxEv
   };
 }
 
-export async function auditBlinkIsaForFile(file: ProjectFile): Promise<BlinkIsaAudit> {
+function nextFrame(): Promise<void> {
+  if (typeof requestAnimationFrame !== 'function') return Promise.resolve();
+  return new Promise((resolve) => requestAnimationFrame(() => resolve()));
+}
+
+/**
+ * Audit the exact file-backed executable PT_LOAD bytes that Blink may execute.
+ * This intentionally does not trust section headers or GNU ISA notes: stripped
+ * binaries and stale metadata must not bypass the compatibility gate.
+ */
+export async function auditBlinkIsaForFile(file: ProjectFile, maxEvidence = 12): Promise<BlinkIsaAudit> {
   if (file.kind !== 'binary' || !file.bytes) throw new Error('Blink ISA preflight requires authoritative binary bytes.');
-  return auditBlinkIsaDocument(await loadFullBinaryDisassembly(file));
+
+  const image = parseElfImage(file.id, file.path, file.bytes);
+  const capstone = await loadCapstone();
+  const families = new Set<BlinkUnsupportedIsaFamily>();
+  const evidence: BlinkIsaEvidence[] = [];
+  const segments = image.segments.filter((segment) => segment.executable && segment.fileSize > 0).sort((left, right) => left.virtualAddress - right.virtualAddress);
+  const chunkSize = 96 * 1024;
+  let scannedInstructions = 0;
+  let decodedBytes = 0;
+  let skippedBytes = 0;
+  let chunks = 0;
+
+  for (const segment of segments) {
+    let cursor = segment.virtualAddress;
+    const end = segment.virtualAddress + segment.fileSize;
+    const segmentLabel = `PT_LOAD#${segment.index}`;
+
+    while (cursor < end) {
+      const requested = Math.min(chunkSize, end - cursor);
+      const bytes = executableBytesForRange(image, file.bytes, cursor, requested);
+      const decoded = decodeX86_64(capstone, bytes, cursor, { maxInstructions: 32768 });
+
+      if (!decoded.length) {
+        cursor += 1;
+        skippedBytes += 1;
+      } else {
+        for (const instruction of decoded) {
+          if (instruction.address >= end) break;
+          scannedInstructions += 1;
+          addEvidence(families, evidence, {
+            address: instruction.address,
+            bytes: instruction.bytes,
+            mnemonic: instruction.mnemonic,
+            operands: instruction.operands,
+            sectionName: segmentLabel
+          }, maxEvidence);
+        }
+        const last = decoded.at(-1)!;
+        const advanced = Math.max(1, Math.min(end, last.endAddress) - cursor);
+        cursor += advanced;
+        decodedBytes += advanced;
+      }
+
+      chunks += 1;
+      if (chunks % 4 === 0) await nextFrame();
+    }
+  }
+
+  return {
+    compatible: families.size === 0,
+    profile: REQUIRED_BLINK_BUILD_PROFILE,
+    scannedInstructions,
+    decodedBytes,
+    skippedBytes,
+    unsupportedFamilies: [...families],
+    evidence
+  };
 }
 
 function familyLabel(family: BlinkUnsupportedIsaFamily): string {
@@ -128,5 +203,5 @@ export function describeBlinkIsaAuditFailure(fileName: string, audit: BlinkIsaAu
     ? ` Capstone skipped ${audit.skippedBytes.toLocaleString()} executable byte(s); the rejection is based only on positively decoded unsupported instructions.`
     : '';
 
-  return `${fileName} is incompatible with Blink profile ${audit.profile}. Executable bytes require ${families}.${firstInstruction}${skipped} ELF ISA notes are advisory here; execution compatibility is decided from authoritative executable bytes decoded by Capstone. Rebuild the guest for portable x86-64 baseline (for Zig/VZed, use an explicit baseline CPU target rather than native CPU features).`;
+  return `${fileName} is incompatible with Blink profile ${audit.profile}. Executable bytes require ${families}.${firstInstruction}${skipped} ELF ISA notes are advisory here; execution compatibility is decided from authoritative executable PT_LOAD bytes decoded by Capstone. Rebuild the guest for portable x86-64 baseline (for Zig/VZed, use an explicit baseline CPU target rather than native CPU features).`;
 }
