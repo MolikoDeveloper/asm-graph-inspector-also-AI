@@ -1,6 +1,6 @@
 # ASM Graph Inspector — toolchain / execution roadmap
 
-This file is the implementation contract for the ASM → binary → analysis/execution migration.
+This file is the implementation contract for the ASM → binary → analysis/execution migration and the broader producer-agnostic Linux binary sandbox.
 
 ## Working rules
 
@@ -8,6 +8,7 @@ This file is the implementation contract for the ASM → binary → analysis/exe
 - [x] Keep assembly and execution as separate libraries/modules.
 - [x] The assembler ends at bytes/artifacts; it must not own program execution.
 - [x] The execution engine consumes real binaries; it must not parse/assemble ASM source.
+- [x] Binary execution is producer/toolchain agnostic: compatibility is derived from the artifact bytes, ELF metadata, dependency closure and sandbox capabilities, never from assumptions about which compiler/language created the file.
 - [x] Binary instruction truth comes from real bytes + Capstone, not from source-semantic pseudo-PCs or objdump text.
 - [x] Keep Global Dependencies as the authoritative user-provided runtime library store (`PT_INTERP` + recursive `DT_NEEDED`).
 - [x] Keep toolchain files separate from guest runtime dependencies.
@@ -19,20 +20,25 @@ This file is the implementation contract for the ASM → binary → analysis/exe
 ## Target architecture
 
 ```text
-ASM source
-   |
-   v
-AssemblerBackend
-   |
-   v
-real ELF/object/flat bytes
-   |
-   +---------------------> Capstone -> disassembly / CFG / call graph / dataflow
-   |
-   +---------------------> Execution engine -> Blink -> Linux userspace ABI
-                                                |
-                                                +-> Global Dependencies
+ASM source ---------------------> AssemblerBackend -----> real ELF/object/flat bytes ---+
+                                                                                         |
+Imported Linux ELF ---------------------------------------------------------------+       |
+                                                                                  |       |
+                                                                                  v       v
+                                                                         Binary artifact
+                                                                              |
+                                         +------------------------------------+-----------------------------------+
+                                         |                                                                        |
+                                         v                                                                        v
+                              Capstone / ELF analysis                                                   Execution engine
+                              disassembly / CFG /                                                      Blink Linux userspace
+                              call graph / dataflow                                                            |
+                                                                                                               v
+                                                                                                     Global Dependencies
+                                                                                                     PT_INTERP + DT_NEEDED
 ```
+
+The long-term execution contract is not "run binaries produced by our assembler". It is: accept an x86-64 Linux ELF from any producer, resolve the loader and recursive shared-library closure supplied through Global Dependencies, validate the artifact/runtime against the sandbox capabilities, and execute it without requiring a Linux kernel.
 
 ## Checkpoint 1 — toolchain abstraction
 
@@ -117,9 +123,9 @@ Blink Step now indexes the main executable plus the materialized `PT_INTERP`/rec
 - [ ] Extend syscall/VFS policy only from concrete program requirements; do not emulate unrelated kernel subsystems pre-emptively.
 - [ ] Preserve explicit diagnostics for unsupported syscalls and environment services.
 
-## Checkpoint 10 — Blink ISA compatibility and portable guest contract
+## Checkpoint 10 — Blink ISA compatibility and producer-agnostic guest contract
 
-The large VZed `ray_test` regression proved that ELF ISA notes are not sufficient execution evidence: the file advertises x86-64-baseline while executable bytes contain AVX/VEX, AVX2-style vector forms and GFNI. The browser Blink profile intentionally implements a baseline CPU contract, not arbitrary host-native extensions.
+The large imported `ray_test` regression proved that ELF ISA notes are not sufficient execution evidence: the file advertises x86-64-baseline while executable bytes contain AVX/VEX, AVX2-style vector forms and GFNI. This is a property of the artifact, not of VZed, Zig or any specific producer. The browser Blink profile intentionally implements a defined CPU contract rather than arbitrary host-native extensions.
 
 - [x] Add a Blink ISA preflight based on authoritative executable `PT_LOAD` bytes decoded by pinned Capstone.
 - [x] Reject positively decoded AVX/VEX vector, EVEX/AVX-512, GFNI and VMX instructions before creating the Blink guest session.
@@ -129,12 +135,13 @@ The large VZed `ray_test` regression proved that ELF ISA notes are not sufficien
 - [x] Surface ISA preflight progress/result explicitly in Debug Console, including executable-byte progress, decoded instruction count, detected ISA families, first evidence addresses and elapsed time.
 - [ ] Audit executable bytes of the materialized interpreter and recursive Global Dependencies as well as the main guest image; dependency AVX must be treated carefully because glibc IFUNC libraries can legitimately contain optional dispatched implementations.
 - [x] Parse GNU `DT_VERNEED` / `DT_VERDEF` symbol-version metadata directly from file-backed dynamic ELF data without depending on section headers.
-- [ ] Validate the selected Global Dependencies against those GNU symbol-version requirements before Blink launch (the large `ray_test` requires symbols through `GLIBC_2.36`).
+- [ ] Validate the selected Global Dependencies against those GNU symbol-version requirements before Blink launch.
 - [x] Add a compact real ELF regression fixture assembled and linked by the pinned NASM + GNU ld toolchain whose actual bytes contain VEX/AVX instructions, then prove Capstone classifies the entry instruction as unsupported.
 - [ ] Add a browser/controller E2E proving that an unsupported real ELF is rejected before `BlinkProcessSession.create()` starts.
-- [ ] VZed producer contract: build browser-inspector-compatible Linux artifacts with an explicit portable x86-64 baseline CPU target rather than host-native CPU features.
-- [ ] VZed producer contract: apply the same CPU target to generated module code, runtime/support objects and compiler-rt inputs so link-time code cannot reintroduce AVX/AVX2/GFNI.
-- [ ] VZed producer contract: add a post-link ISA audit that fails when an inspector-compatible artifact contains instructions outside the agreed Blink profile.
-- [ ] Add a VZed baseline `ray_test` regression and prove `VZed -> ELF -> Global Dependencies -> Blink -> stdout/exit(0)` end to end.
+- [x] Keep user-visible compatibility diagnostics producer agnostic; do not prescribe Zig/VZed/NASM/GCC/Clang-specific flags from the execution core.
+- [ ] Define a generic artifact compatibility report covering machine architecture, ELF class/endianness, CPU ISA, interpreter, dependency closure, required symbol versions, unsupported syscalls/environment services and observed runtime traps.
+- [ ] Allow optional producer-specific remediation hints only as an extension layer when producer metadata is positively identified; the core compatibility verdict must remain based on artifact/runtime evidence.
+- [ ] Add imported-binary regression fixtures from multiple unrelated producers/toolchains and prove they all enter the same `ELF -> dependencies -> Blink` path.
+- [ ] Keep the large `ray_test` as one regression fixture proving that producer identity does not affect compatibility analysis or execution routing.
 
-The inspector-side compatibility gate is deliberately fail-closed only on positively decoded unsupported instructions. Bytes Capstone cannot decode are reported as skipped evidence rather than guessed to be AVX. Producer-side portability remains necessary: the inspector must diagnose incompatible binaries, not rewrite them or pretend Blink implements instructions it does not.
+The inspector-side compatibility gate is deliberately fail-closed only on positively decoded unsupported instructions. Bytes Capstone cannot decode are reported as skipped evidence rather than guessed to be AVX. The inspector must diagnose the binary that it was actually given, resolve the libraries it actually requests, and report precisely which sandbox capability blocks execution. It must not rewrite the guest or infer compatibility from the compiler/language that produced it.
