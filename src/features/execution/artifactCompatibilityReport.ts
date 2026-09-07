@@ -4,6 +4,7 @@ import type { ProjectFile } from '../project/model';
 import type { BlinkIsaAudit } from './blinkIsaPreflight';
 import type { ExecutionSnapshot, ExecutionSupport } from './model';
 import type { RuntimeDependencyClosure } from './runtimeDependencies';
+import type { BlinkRuntimeIsaAudit } from './runtimeIsaAudit';
 import type { RuntimeSymbolVersionValidation } from './runtimeSymbolVersions';
 
 export const ARTIFACT_COMPATIBILITY_REPORT_SCHEMA = 'asm-graph.artifact-compatibility/v1' as const;
@@ -14,6 +15,7 @@ export type ArtifactCompatibilityCheckId =
   | 'architecture'
   | 'execution-backend'
   | 'cpu-isa'
+  | 'runtime-isa'
   | 'interpreter'
   | 'dependency-closure'
   | 'symbol-versions'
@@ -44,6 +46,7 @@ export interface ArtifactCompatibilityReportInput {
   image?: LoadedImage | null;
   executionSupport?: ExecutionSupport | null;
   isaAudit?: BlinkIsaAudit | null;
+  runtimeIsa?: BlinkRuntimeIsaAudit | null;
   runtimeClosure?: RuntimeDependencyClosure | null;
   runtimeClosureError?: string | null;
   symbolVersions?: RuntimeSymbolVersionValidation | null;
@@ -63,6 +66,46 @@ function check(
 function basename(path: string): string {
   const normalized = path.replace(/\\/g, '/');
   return normalized.slice(normalized.lastIndexOf('/') + 1);
+}
+
+function runtimeIsaCheck(runtimeIsa: BlinkRuntimeIsaAudit | null | undefined): ArtifactCompatibilityCheck {
+  if (!runtimeIsa) {
+    return check('runtime-isa', 'Runtime dependency ISA', 'unknown', 'Materialized PT_INTERP/DT_NEEDED executable bytes have not been inventoried yet.');
+  }
+  if (!runtimeIsa.compatible) {
+    const blockers = runtimeIsa.modules.filter((module) => module.blockingEvidence !== null);
+    return check(
+      'runtime-isa',
+      'Runtime dependency ISA',
+      'fail',
+      `${runtimeIsa.blockingModuleCount.toLocaleString()} runtime module(s) contain unsupported ISA on a mandatory interpreter-entry path.`,
+      blockers.slice(0, 8).map((module) => {
+        const evidence = module.blockingEvidence!;
+        return `${module.fileName}: 0x${evidence.address.toString(16)} ${evidence.mnemonic}${evidence.operands ? ` ${evidence.operands}` : ''}`;
+      })
+    );
+  }
+  if (runtimeIsa.advisoryModuleCount > 0) {
+    const advisory = runtimeIsa.modules.filter((module) => module.unsupportedFamilies.length > 0 && module.blockingEvidence === null);
+    return check(
+      'runtime-isa',
+      'Runtime dependency ISA',
+      'pass',
+      `${runtimeIsa.scannedModules.toLocaleString()} runtime module(s) scanned; ${runtimeIsa.advisoryModuleCount.toLocaleString()} contain non-blocking optional/dispatched ISA evidence.`,
+      [
+        ...advisory.slice(0, 6).map((module) => `${module.fileName}: ${module.unsupportedFamilies.join(', ')}`),
+        'Whole-image DSO hits are advisory because GNU IFUNC/multiarch CPU dispatch can keep those implementations dormant. Observed SIGILL + RIP/module evidence is authoritative if they execute.'
+      ]
+    );
+  }
+  return check(
+    'runtime-isa',
+    'Runtime dependency ISA',
+    runtimeIsa.scannedModules ? 'pass' : 'not-applicable',
+    runtimeIsa.scannedModules
+      ? `${runtimeIsa.scannedModules.toLocaleString()} materialized runtime module(s) scanned with no unsupported ISA evidence.`
+      : 'No materialized PT_INTERP/DT_NEEDED runtime modules require ISA inventory.'
+  );
 }
 
 function runtimeServiceCheck(snapshot: ExecutionSnapshot | null | undefined): ArtifactCompatibilityCheck {
@@ -145,7 +188,17 @@ function observedRuntimeCheck(snapshot: ExecutionSnapshot | null | undefined): A
  * observed execution result.
  */
 export function buildArtifactCompatibilityReport(input: ArtifactCompatibilityReportInput): ArtifactCompatibilityReport {
-  const { file, image = null, executionSupport = null, isaAudit = null, runtimeClosure = null, runtimeClosureError = null, symbolVersions = null, snapshot = null } = input;
+  const {
+    file,
+    image = null,
+    executionSupport = null,
+    isaAudit = null,
+    runtimeIsa = null,
+    runtimeClosure = null,
+    runtimeClosureError = null,
+    symbolVersions = null,
+    snapshot = null
+  } = input;
   const header = inspectElfHeader(file.kind === 'binary' ? file.bytes : undefined);
   const checks: ArtifactCompatibilityCheck[] = [];
 
@@ -191,6 +244,8 @@ export function buildArtifactCompatibilityReport(input: ArtifactCompatibilityRep
       first ? [`first static evidence: 0x${first.address.toString(16)} ${first.mnemonic}${first.operands ? ` ${first.operands}` : ''}`] : []
     ));
   }
+
+  checks.push(runtimeIsaCheck(runtimeIsa));
 
   if (!image) {
     checks.push(check('interpreter', 'ELF interpreter', 'unknown', 'Loaded-image metadata is unavailable.'));
