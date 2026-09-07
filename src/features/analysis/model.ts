@@ -42,6 +42,8 @@ export interface GraphEdge {
   to: string;
   kind: 'control' | 'branch' | 'call' | 'data';
   label?: string;
+  /** CFG evidence that the edge returns to an earlier block in the function. */
+  loopBack?: boolean;
 }
 
 export interface AnalysisGraph {
