@@ -1,0 +1,95 @@
+.bottom-panel-console {
+  position: relative;
+  height: 100%;
+  min-height: 0;
+  display: grid;
+  grid-template-rows: 34px minmax(0, 1fr);
+  background: #080d12;
+}
+
+.bottom-panel-console .bottom-tabs {
+  display: flex;
+  align-items: stretch;
+  gap: 1px;
+  padding-left: 8px;
+  border-bottom: 1px solid #1d2934;
+  background: #0b1218;
+}
+
+.bottom-panel-console .bottom-tabs button {
+  position: relative;
+  height: 34px;
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  padding: 0 10px;
+  border: 0;
+  border-bottom: 2px solid transparent;
+  background: transparent;
+  color: #778b9e;
+  font-size: 10px;
+  cursor: pointer;
+}
+
+.bottom-panel-console .bottom-tabs button:hover { color: #cad8e2; background: #101a22; }
+.bottom-panel-console .bottom-tabs button.active { color: #e3edf5; border-bottom-color: #2c9ae8; background: #0d161e; }
+
+.bottom-tab-badge {
+  min-width: 16px;
+  height: 16px;
+  display: inline-grid;
+  place-items: center;
+  padding: 0 4px;
+  border-radius: 8px;
+  background: #123957;
+  color: #9ed7fb;
+  font: 8px ui-monospace, SFMono-Regular, Menlo, monospace;
+}
+
+.bottom-panel-page {
+  min-width: 0;
+  min-height: 0;
+  display: none;
+  overflow: hidden;
+}
+.bottom-panel-page.active { display: block; }
+.bottom-panel-page > * { height: 100%; min-height: 0; }
+
+.bottom-panel-error-indicator {
+  position: absolute;
+  right: 8px;
+  top: 13px;
+  width: 7px;
+  height: 7px;
+  border-radius: 50%;
+  background: #e56972;
+  box-shadow: 0 0 0 3px rgba(229, 105, 114, .12);
+  pointer-events: none;
+}
+
+.analysis-properties-toggle {
+  height: 25px;
+  flex: 0 0 auto;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  border: 1px solid #273746;
+  border-radius: 4px;
+  background: #0d151c;
+  color: #778b9d;
+  font-size: 9px;
+  cursor: pointer;
+}
+.analysis-properties-toggle:hover { border-color: #37617e; color: #d4e1ea; }
+.analysis-properties-toggle.active { border-color: #315b77; background: #102331; color: #a9d2e9; }
+
+.analysis-dock-cfg.inspector-collapsed,
+.cfg-view-shell.inspector-collapsed .analysis-dock-cfg {
+  grid-template-columns: minmax(0, 1fr) !important;
+}
+
+@media (max-width: 1120px) {
+  .analysis-properties-toggle span { display: none; }
+  .analysis-properties-toggle { width: 26px; padding: 0; justify-content: center; }
+}
