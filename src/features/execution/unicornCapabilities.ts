@@ -1,7 +1,7 @@
 import type { UnicornEngine, UnicornModule } from './unicornTypes';
 import { currentUnicornX86, loadUnicornX86 } from './unicornLoader';
 
-export type UnicornCapabilityId = 'baseline' | 'cpuid' | 'xgetbv' | 'sse2' | 'avx' | 'avx2-subset';
+export type UnicornCapabilityId = 'baseline' | 'cpuid' | 'xgetbv' | 'sse2' | 'avx' | 'avx2';
 
 export interface UnicornCapabilityProbe {
   id: UnicornCapabilityId;
@@ -15,11 +15,9 @@ export interface UnicornCapabilityReport {
   version: string;
   architecture: 'x86-64';
   evidence: 'observed-unicorn-execution';
+  /** Individual probe results only; this report does not certify a full ISA level. */
   scope: 'observed-probes';
-  /**
-   * Null until a complete ISA level is both implemented and validated. Individual
-   * probes — including avx2-subset — are execution evidence, not an ISA promise.
-   */
+  /** Remains null until a complete ISA level is both implemented and validated. */
   completeIsaLevel: null;
   probes: UnicornCapabilityProbe[];
 }
@@ -33,8 +31,8 @@ const PROBES: ReadonlyArray<ProbeDefinition> = [
   { id: 'sse2', label: 'SSE2 probe', bytes: [0x66, 0x0f, 0xef, 0xc0] }, // pxor xmm0, xmm0
   { id: 'avx', label: 'AVX 3-operand XOR probe', bytes: [0xc5, 0xf0, 0x57, 0xc2] }, // vxorps xmm0,xmm1,xmm2
   {
-    id: 'avx2-subset',
-    label: 'AVX2 audited-subset probe (256-bit move + 3-operand XOR)',
+    id: 'avx2',
+    label: 'AVX2 audited-subset probe (256-bit move + 3-operand XOR; not a full ISA claim)',
     bytes: [0xc5, 0xf5, 0xef, 0xc2] // vpxor ymm0,ymm1,ymm2
   }
 ];
@@ -104,9 +102,10 @@ function runVectorXorProbe(
 
   // Keep setup/observation outside the instruction under test whenever possible.
   // AVX uses legacy MOVDQU around a VEX.128 VXORPS so vvvv/three-operand semantics
-  // are verified independently of VEX moves. The AVX2-subset probe necessarily
-  // exercises the minimal 256-bit VMOVDQU + VPXOR closure because legacy SSE
-  // cannot seed or observe the upper 128-bit YMM lane.
+  // are verified independently of VEX moves. The AVX2 probe necessarily exercises
+  // the minimal 256-bit VMOVDQU + VPXOR closure because legacy SSE cannot seed or
+  // observe the upper 128-bit YMM lane. Its success is evidence for this subset,
+  // not a claim that every AVX2 opcode is implemented.
   const code = width === 16
     ? [
         0xf3, 0x0f, 0x6f, 0x08,
@@ -142,7 +141,7 @@ function runVectorXorProbe(
 
 function runProbe(module: UnicornModule, probe: ProbeDefinition): UnicornCapabilityProbe {
   if (probe.id === 'avx') return runVectorXorProbe(module, probe, 16);
-  if (probe.id === 'avx2-subset') return runVectorXorProbe(module, probe, 32);
+  if (probe.id === 'avx2') return runVectorXorProbe(module, probe, 32);
   return runInstructionProbe(module, probe);
 }
 
