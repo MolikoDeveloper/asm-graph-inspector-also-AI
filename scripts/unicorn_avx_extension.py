@@ -2,12 +2,12 @@
 """Audited AVX (VEX.0F) extensions layered on the existing AVX2 patch.
 
 The pinned QEMU already has mature SSE/SSE2/SSE3 helpers for the arithmetic
-semantics below.  This layer only adapts VEX operand topology and vector width:
+semantics below. This layer adapts VEX operand topology and vector width:
 NDS three-operand instructions stage VEX.vvvv as source1, 256-bit packed forms
 run the existing helper independently for each architectural 128-bit lane, and
 VEX.128 destinations keep the existing zero-upper invariant.
 
-Do not add opcodes here merely because an SSE helper exists.  Every condition in
+Do not add opcodes here merely because an SSE helper exists. Every condition in
 this file corresponds to an explicit VEX form in the requested AVX matrix.
 """
 
@@ -60,11 +60,24 @@ def patch_avx_map1_binary_and_moves(source_root: Path) -> None:
                   (!s->vex_l && (b1 == 2 || b1 == 3) &&
                    (b == 0x58 || b == 0x59 || b == 0x5c ||
                     b == 0x5d || b == 0x5e || b == 0x5f)) ||
-                  /* Scalar sqrt/rcp/rsqrt are NDS; packed forms are unary and
-                   * get a dedicated reserved-vvvv path later. */
+                  /* Scalar sqrt/rcp/rsqrt are NDS. */
                   (!s->vex_l && b1 == 2 &&
                    (b == 0x51 || b == 0x52 || b == 0x53)) ||
                   (!s->vex_l && b1 == 3 && b == 0x51) ||
+                  /* Packed unary sqrt/rcp/rsqrt reserve VEX.vvvv. The generic
+                   * helper path snapshots source2 before destination writes. */
+                  (s->vex_v == 0 &&
+                   ((b == 0x51 && b1 <= 1) ||
+                    ((b == 0x52 || b == 0x53) && b1 == 0))) ||
+                  /* VCMP is NDS for packed/scalar forms. Packed permits L=1;
+                   * scalar must remain VEX.128. Predicate extension is checked
+                   * by the immediate dispatch below. */
+                  (b == 0xc2 && (b1 <= 1 || !s->vex_l)) ||
+                  /* VSHUFPS/PD are packed NDS; VPSHUF* is unary with reserved
+                   * vvvv and uses the same immediate helper path. */
+                  (b == 0xc6 && b1 <= 1) ||
+                  (b == 0x70 && s->vex_v == 0 &&
+                   (b1 == 1 || b1 == 2 || b1 == 3)) ||
                   /* SSE3 horizontal/addsub helpers are lane-local for YMM. */
                   ((b1 == 1 || b1 == 3) &&
                    (b == 0x7c || b == 0x7d || b == 0xd0))
@@ -87,5 +100,68 @@ def patch_avx_map1_binary_and_moves(source_root: Path) -> None:
     if text.count(old_moves) != 1:
         raise RuntimeError("Post-AVX2 vector-move classification no longer matches")
     text = text.replace(old_moves, new_moves, 1)
+
+    immediate_before = """        case 0x70: /* pshufx insn */
+        case 0xc6: /* pshufx insn */
+            val = x86_ldub_code(env, s);
+            tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset);
+            tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset);
+            /* XXX: introduce a new table? */
+            sse_fn_ppi = (SSEFunc_0_ppi)sse_fn_epp;
+            sse_fn_ppi(tcg_ctx, s->ptr0, s->ptr1, tcg_const_i32(tcg_ctx, val));
+            break;
+        case 0xc2:
+            /* compare insns */
+            val = x86_ldub_code(env, s);
+            if (val >= 8)
+                goto unknown_op;
+            sse_fn_epp = sse_op_table4[val][b1];
+
+            tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset);
+            tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset);
+            sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
+            break;
+"""
+    immediate_after = """        case 0x70: /* pshufx / vpshufx */
+        case 0xc6: /* shufps/pd / vshufps/pd */
+            val = x86_ldub_code(env, s);
+            tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset);
+            tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset);
+            sse_fn_ppi = (SSEFunc_0_ppi)sse_fn_epp;
+            sse_fn_ppi(tcg_ctx, s->ptr0, s->ptr1, tcg_const_i32(tcg_ctx, val));
+            if (vex_binary && s->vex_l) {
+                tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset + 16);
+                tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset + 16);
+                sse_fn_ppi(tcg_ctx, s->ptr0, s->ptr1, tcg_const_i32(tcg_ctx, val));
+            }
+            if (vex_binary) {
+                gen_op_zero_vex_upper(s, op1_offset, s->vex_l);
+            }
+            break;
+        case 0xc2:
+            /* AVX retains the legacy eight SSE predicates and adds more. Keep
+             * unported predicates fail-closed rather than aliasing their
+             * exception/signaling semantics. */
+            val = x86_ldub_code(env, s);
+            if (val >= 8)
+                goto unknown_op;
+            sse_fn_epp = sse_op_table4[val][b1];
+
+            tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset);
+            tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset);
+            sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
+            if (vex_binary && s->vex_l) {
+                tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset + 16);
+                tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset + 16);
+                sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
+            }
+            if (vex_binary) {
+                gen_op_zero_vex_upper(s, op1_offset, s->vex_l);
+            }
+            break;
+"""
+    if text.count(immediate_before) != 1:
+        raise RuntimeError("Pinned immediate compare/shuffle block no longer matches")
+    text = text.replace(immediate_before, immediate_after, 1)
 
     translate_path.write_text(text)
