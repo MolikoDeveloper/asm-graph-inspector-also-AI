@@ -3,6 +3,8 @@ name: Unicorn AVX2 validation
 on:
   push:
     branches: [feature/unicorn-avx2]
+  pull_request:
+    branches: [master]
   workflow_dispatch:
 
 permissions:
@@ -75,5 +77,23 @@ jobs:
       - name: AVX2 VPERMD cross-lane semantics
         run: bun tests/execution/unicorn-avx2-vpermd-smoke.ts
 
+      - name: Build Blink WASM runtime
+        run: bun run vendor:blink
+
+      - name: Toolchain tests
+        run: bun run test:toolchain
+
+      - name: Import classification tests
+        run: bun run test:import
+
+      - name: Binary analysis tests
+        run: bun run test:analysis
+
+      - name: Execution integration tests
+        run: bun run test:execution
+
       - name: Typecheck
         run: bun run typecheck
+
+      - name: Build
+        run: bun run build
