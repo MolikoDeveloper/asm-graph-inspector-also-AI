@@ -16,64 +16,29 @@ from __future__ import annotations
 from pathlib import Path
 
 
-# 66 0F opcodes with ordinary three-operand packed integer semantics. The base
-# AVX patch already snapshots source2, copies VEX.vvvv source1 into destination,
-# invokes the XMM helper once per 128-bit lane, and applies VEX zero-upper rules.
 PACKED_BINARY_OPCODES = (
-    # Interleave and pack; AVX2 defines these independently per 128-bit lane.
     0x60, 0x61, 0x62, 0x63, 0x67, 0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D,
-    # Compare.
     0x64, 0x65, 0x66, 0x74, 0x75, 0x76,
-    # Add/subtract and logical core.
     0xD4, 0xDB, 0xDF, 0xEB, 0xEF, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE,
-    # Multiply / pairwise multiply-add / absolute-difference sum.
     0xD5, 0xE4, 0xE5, 0xF4, 0xF5, 0xF6,
-    # Unsigned saturating arithmetic and min/max.
     0xD8, 0xD9, 0xDA, 0xDC, 0xDD, 0xDE,
-    # Rounded averages.
     0xE0, 0xE3,
-    # Signed saturating arithmetic and min/max.
     0xE8, 0xE9, 0xEA, 0xEC, 0xED, 0xEE,
 )
 
-# 66 0F38 operations backed by existing SSSE3/SSE4.x XMM helpers. These are
-# lane-local for AVX2. The old translator's 0F38 path is destructive and
-# 128-bit-only, so this family needs a separate VEX-aware adapter below.
 MAP38_BINARY_OPCODES = (
-    0x00,  # vpshufb
-    0x01,  # vphaddw
-    0x02,  # vphaddd
-    0x03,  # vphaddsw
-    0x04,  # vpmaddubsw
-    0x05,  # vphsubw
-    0x06,  # vphsubd
-    0x07,  # vphsubsw
-    0x08,  # vpsignb
-    0x09,  # vpsignw
-    0x0A,  # vpsignd
-    0x0B,  # vpmulhrsw
-    0x28,  # vpmuldq
-    0x29,  # vpcmpeqq
-    0x2B,  # vpackusdw
-    0x37,  # vpcmpgtq
-    0x38,  # vpminsb
-    0x39,  # vpminsd
-    0x3A,  # vpminuw
-    0x3B,  # vpminud
-    0x3C,  # vpmaxsb
-    0x3D,  # vpmaxsd
-    0x3E,  # vpmaxuw
-    0x3F,  # vpmaxud
-    0x40,  # vpmulld
+    0x00, 0x01, 0x02, 0x03, 0x04, 0x05, 0x06, 0x07,
+    0x08, 0x09, 0x0A, 0x0B,
+    0x28, 0x29, 0x2B, 0x37,
+    0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40,
 )
 
-# AVX2 packed sign/zero-extension moves. A 256-bit destination consumes only
-# 4/8/16 source bytes depending on the element-width ratio. The XMM helpers
-# already implement one 128-bit destination, so the adapter invokes them twice
-# with source pointers separated by exactly the helper's consumed byte count.
+# VPMOVSX*/VPMOVZX*. One XMM helper produces one 128-bit destination. For
+# VEX.256 the second call consumes the immediately following narrow source
+# chunk and writes the high 128-bit destination lane.
 MAP38_EXTEND_OPCODES = (
-    0x20, 0x21, 0x22, 0x23, 0x24, 0x25,  # vpmovsx*
-    0x30, 0x31, 0x32, 0x33, 0x34, 0x35,  # vpmovzx*
+    0x20, 0x21, 0x22, 0x23, 0x24, 0x25,
+    0x30, 0x31, 0x32, 0x33, 0x34, 0x35,
 )
 
 
@@ -168,7 +133,7 @@ def patch_avx2_map38_lane_local_ops(source_root: Path) -> None:
         case 0x038:
             b = modrm;
             if (vex_map38) {{
-                /* Fail closed before any helper lookup or BMI/CRC side path. */
+                /* Fail closed before helper lookup or BMI/CRC side paths. */
                 switch (b) {{
 {allow_cases}
                     break;
@@ -182,30 +147,25 @@ def patch_avx2_map38_lane_local_ops(source_root: Path) -> None:
         raise RuntimeError("Pinned 0F38 entry block no longer matches the audited source")
     text = text.replace(map_entry_before, map_entry_after, 1)
 
-    extend_cases = " ".join(f"case 0x{opcode:02x}:" for opcode in MAP38_EXTEND_OPCODES)
+    extend_cases = "\n".join(f"                case 0x{opcode:02x}:" for opcode in MAP38_EXTEND_OPCODES)
     helper_anchor_before = """            if (!(s->cpuid_ext_features & sse_op_table6[b].ext_mask))
                 goto illegal_op;
 
-            if (vex_map38) {
-                int src1_offset = offsetof(CPUX86State, xmm_regs[s->vex_v]);
-
-                op1_offset = offsetof(CPUX86State, xmm_regs[reg]);
+            if (b1) {
 """
     helper_anchor_after = f"""            if (!(s->cpuid_ext_features & sse_op_table6[b].ext_mask))
                 goto illegal_op;
 
             if (vex_map38) {{
-                int src1_offset = offsetof(CPUX86State, xmm_regs[s->vex_v]);
-
                 op1_offset = offsetof(CPUX86State, xmm_regs[reg]);
 
                 switch (b) {{
-                {extend_cases}
+{extend_cases}
                     {{
                         int source_chunk;
                         int source_bytes;
 
-                        /* Reserved VEX.vvvv must encode 1111b, decoded here as 0. */
+                        /* Reserved VEX.vvvv=1111b is decoded by QEMU as zero. */
                         if (s->vex_v != 0) {{
                             goto illegal_op;
                         }}
@@ -229,8 +189,8 @@ def patch_avx2_map38_lane_local_ops(source_root: Path) -> None:
                             rm = (modrm & 7) | REX_B(s);
                             op2_offset = offsetof(CPUX86State, xmm_regs[rm]);
                             if (rm == reg) {{
-                                /* Destination overwrites the same architectural
-                                 * register that supplies the narrow source. */
+                                /* Snapshot before destination widening overwrites
+                                 * the narrow source in the same register. */
                                 gen_op_movo(s, offsetof(CPUX86State, xmm_t0), op2_offset);
                                 op2_offset = offsetof(CPUX86State, xmm_t0);
                             }}
@@ -275,48 +235,49 @@ def patch_avx2_map38_lane_local_ops(source_root: Path) -> None:
                         break;
                     }}
                 default:
-                    if (mod == 3) {{
-                        rm = (modrm & 7) | REX_B(s);
-                        op2_offset = offsetof(CPUX86State, xmm_regs[rm]);
-                        if (rm == reg) {{
-                            /* src2 aliases destination: snapshot before copying src1. */
-                            if (s->vex_l) {{
-                                gen_op_movy(s, offsetof(CPUX86State, xmm_t0), op2_offset);
-                            }} else {{
-                                gen_op_movo(s, offsetof(CPUX86State, xmm_t0), op2_offset);
+                    {{
+                        int src1_offset = offsetof(CPUX86State, xmm_regs[s->vex_v]);
+
+                        if (mod == 3) {{
+                            rm = (modrm & 7) | REX_B(s);
+                            op2_offset = offsetof(CPUX86State, xmm_regs[rm]);
+                            if (rm == reg) {{
+                                if (s->vex_l) {{
+                                    gen_op_movy(s, offsetof(CPUX86State, xmm_t0), op2_offset);
+                                }} else {{
+                                    gen_op_movo(s, offsetof(CPUX86State, xmm_t0), op2_offset);
+                                }}
+                                op2_offset = offsetof(CPUX86State, xmm_t0);
                             }}
+                        }} else {{
+                            gen_lea_modrm(env, s, modrm);
                             op2_offset = offsetof(CPUX86State, xmm_t0);
+                            if (s->vex_l) {{
+                                gen_ldy_env_A0(s, op2_offset);
+                            }} else {{
+                                gen_ldo_env_A0(s, op2_offset);
+                            }}
                         }}
-                    }} else {{
-                        /* Load memory through scratch so an upper-lane fault cannot
-                         * partially mutate the architectural destination. */
-                        gen_lea_modrm(env, s, modrm);
-                        op2_offset = offsetof(CPUX86State, xmm_t0);
-                        if (s->vex_l) {{
-                            gen_ldy_env_A0(s, op2_offset);
-                        }} else {{
-                            gen_ldo_env_A0(s, op2_offset);
-                        }}
-                    }}
 
-                    if (s->vex_v != reg) {{
-                        if (s->vex_l) {{
-                            gen_op_movy(s, op1_offset, src1_offset);
-                        }} else {{
-                            gen_op_movo(s, op1_offset, src1_offset);
+                        if (s->vex_v != reg) {{
+                            if (s->vex_l) {{
+                                gen_op_movy(s, op1_offset, src1_offset);
+                            }} else {{
+                                gen_op_movo(s, op1_offset, src1_offset);
+                            }}
                         }}
-                    }}
 
-                    tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset);
-                    tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset);
-                    sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
-                    if (s->vex_l) {{
-                        tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset + 16);
-                        tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset + 16);
+                        tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset);
+                        tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset);
                         sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
+                        if (s->vex_l) {{
+                            tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset + 16);
+                            tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset + 16);
+                            sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
+                        }}
+                        gen_op_zero_vex_upper(s, op1_offset, s->vex_l);
+                        break;
                     }}
-                    gen_op_zero_vex_upper(s, op1_offset, s->vex_l);
-                    break;
                 }}
                 break;
             }}
@@ -326,57 +287,5 @@ def patch_avx2_map38_lane_local_ops(source_root: Path) -> None:
     if text.count(helper_anchor_before) != 1:
         raise RuntimeError("Pinned 0F38 helper dispatch no longer matches the audited source")
     text = text.replace(helper_anchor_before, helper_anchor_after, 1)
-
-    # Remove the old binary adapter tail that the replacement above supersedes.
-    old_tail = """                if (mod == 3) {
-                    rm = (modrm & 7) | REX_B(s);
-                    op2_offset = offsetof(CPUX86State, xmm_regs[rm]);
-                    if (rm == reg) {
-                        /* src2 aliases destination: snapshot before copying src1. */
-                        if (s->vex_l) {
-                            gen_op_movy(s, offsetof(CPUX86State, xmm_t0), op2_offset);
-                        } else {
-                            gen_op_movo(s, offsetof(CPUX86State, xmm_t0), op2_offset);
-                        }
-                        op2_offset = offsetof(CPUX86State, xmm_t0);
-                    }
-                } else {
-                    /* Load memory through scratch so an upper-lane fault cannot
-                     * partially mutate the architectural destination. */
-                    gen_lea_modrm(env, s, modrm);
-                    op2_offset = offsetof(CPUX86State, xmm_t0);
-                    if (s->vex_l) {
-                        gen_ldy_env_A0(s, op2_offset);
-                    } else {
-                        gen_ldo_env_A0(s, op2_offset);
-                    }
-                }
-
-                if (s->vex_v != reg) {
-                    if (s->vex_l) {
-                        gen_op_movy(s, op1_offset, src1_offset);
-                    } else {
-                        gen_op_movo(s, op1_offset, src1_offset);
-                    }
-                }
-
-                tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset);
-                tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset);
-                sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
-                if (s->vex_l) {
-                    tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset + 16);
-                    tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset + 16);
-                    sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
-                }
-                gen_op_zero_vex_upper(s, op1_offset, s->vex_l);
-                break;
-            }
-
-            if (b1) {
-"""
-    # The anchor replacement is intentionally constructed to consume this tail.
-    # If it remains, the patch would execute duplicate lowering.
-    if text.count(old_tail):
-        raise RuntimeError("0F38 binary adapter tail unexpectedly remained after extension rewrite")
 
     translate_path.write_text(text)
