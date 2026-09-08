@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react';
+import { Search } from 'lucide-react';
 import type { ProjectFile } from '../features/project/model';
 import type { EditorRevealTarget } from '../features/workspace/model';
 import type { AssemblyProblem } from '../features/analysis/asmParser';
@@ -36,6 +37,13 @@ function findAddressIndex(document: BinaryDisassemblyDocument, address: number):
   return best;
 }
 
+function parseInstructionAddress(value: string): number | null {
+  const normalized = value.trim().replace(/^0x/i, '');
+  if (!normalized || !/^[\da-f]+$/i.test(normalized)) return null;
+  const address = Number.parseInt(normalized, 16);
+  return Number.isSafeInteger(address) ? address : null;
+}
+
 function hexBigInt(value: bigint): string {
   return `0x${value.toString(16)}`;
 }
@@ -53,6 +61,9 @@ function BinaryDisassemblyEditor({ file, fontSize, revealTarget, executionSnapsh
   const [progress, setProgress] = useState({ completed: 0, total: 0 });
   const [scrollTop, setScrollTop] = useState(0);
   const [viewportHeight, setViewportHeight] = useState(600);
+  const [addressQuery, setAddressQuery] = useState('');
+  const [searchedAddress, setSearchedAddress] = useState<number | null>(null);
+  const [searchMessage, setSearchMessage] = useState<string | null>(null);
   const scrollRef = useRef<HTMLDivElement>(null);
   const runtimeScrollRef = useRef<HTMLDivElement>(null);
   const binaryHeader = useMemo(() => inspectElfHeader(file.bytes), [file.bytes]);
@@ -112,6 +123,28 @@ function BinaryDisassemblyEditor({ file, fontSize, revealTarget, executionSnapsh
   const visible = document?.lines.slice(start, end) ?? [];
   const progressPercent = progress.total ? Math.round((progress.completed / progress.total) * 100) : 0;
 
+  function findInstruction(event: React.FormEvent<HTMLFormElement>) {
+    event.preventDefault();
+    const address = parseInstructionAddress(addressQuery);
+    if (address === null) {
+      setSearchMessage('Enter a hexadecimal address, for example 0x43357a.');
+      return;
+    }
+    if (!document || !scrollRef.current) return;
+    const index = findAddressIndex(document, address);
+    const line = document.lines[index];
+    if (!line || address < line.address || address >= line.endAddress) {
+      setSearchedAddress(null);
+      setSearchMessage(`No instruction at 0x${address.toString(16)}.`);
+      return;
+    }
+    const targetTop = Math.max(0, index * rowHeight - scrollRef.current.clientHeight * 0.32);
+    scrollRef.current.scrollTop = targetTop;
+    setScrollTop(targetTop);
+    setSearchedAddress(address);
+    setSearchMessage(`At 0x${line.address.toString(16)}.`);
+  }
+
   return (
     <div className="binary-editor" onMouseDown={onFocus} style={{ '--editor-font-size': `${fontSize}px`, '--disassembly-row-height': `${rowHeight}px` } as CSSProperties}>
       <div className="binary-summary">
@@ -153,12 +186,27 @@ function BinaryDisassemblyEditor({ file, fontSize, revealTarget, executionSnapsh
           {error ? <div className="disassembly-error"><strong>Disassembly failed</strong><span>{error}</span></div> : null}
           {document ? (
             <>
-              <div className="disassembly-meta"><span>{document.lines.length.toLocaleString()} instructions</span><span>{document.sectionCount} executable sections</span><span>{document.decodedBytes.toLocaleString()} decoded bytes</span>{document.skippedBytes ? <span>{document.skippedBytes.toLocaleString()} undecodable/padding bytes skipped</span> : null}</div>
+              <div className="disassembly-meta">
+                <span>{document.lines.length.toLocaleString()} instructions</span><span>{document.sectionCount} executable sections</span><span>{document.decodedBytes.toLocaleString()} decoded bytes</span>{document.skippedBytes ? <span>{document.skippedBytes.toLocaleString()} undecodable/padding bytes skipped</span> : null}
+                <form className="disassembly-address-search" onSubmit={findInstruction}>
+                  <Search size={12} aria-hidden="true" />
+                  <input
+                    aria-label="Find instruction by hexadecimal address"
+                    value={addressQuery}
+                    onChange={(event) => { setAddressQuery(event.target.value); setSearchMessage(null); }}
+                    placeholder="0x43357a"
+                    spellCheck={false}
+                  />
+                  <button type="submit">Find</button>
+                  {searchMessage ? <output className={searchedAddress === null ? 'not-found' : ''}>{searchMessage}</output> : null}
+                </form>
+              </div>
               <div ref={scrollRef} className="disassembly-scroll" onScroll={(event) => setScrollTop(event.currentTarget.scrollTop)}>
                 <div className="disassembly-spacer" style={{ height: document.lines.length * rowHeight }}>
                   <div className="disassembly-window" style={{ transform: `translateY(${start * rowHeight}px)` }}>
                     {visible.map((line) => {
-                      const selected = revealTarget?.fileId === file.id && revealTarget.address !== undefined && revealTarget.address >= line.address && revealTarget.address < line.endAddress;
+                      const selected = (revealTarget?.fileId === file.id && revealTarget.address !== undefined && revealTarget.address >= line.address && revealTarget.address < line.endAddress)
+                        || (searchedAddress !== null && searchedAddress >= line.address && searchedAddress < line.endAddress);
                       return (
                         <div key={line.address} className={selected ? 'disassembly-row selected' : 'disassembly-row'} style={{ height: rowHeight }}>
                           <code className="disassembly-address">{line.address.toString(16).padStart(16, '0')}</code>

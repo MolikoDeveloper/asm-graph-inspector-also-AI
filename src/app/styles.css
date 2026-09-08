@@ -428,7 +428,15 @@ button:focus-visible, input:focus-visible, select:focus-visible, textarea:focus-
 .disassembly-loading i { width: min(420px, 62%); height: 4px; overflow: hidden; border-radius: 4px; background: #192631; }
 .disassembly-loading i b { display: block; height: 100%; background: #2f9cdf; transition: width .12s linear; }
 .disassembly-error { color: #dd7a82; }
-.disassembly-meta { height: 27px; display: flex; align-items: center; gap: 14px; padding: 0 10px; border-bottom: 1px solid #18232d; background: #0c1319; color: #60788c; font-size: 9px; white-space: nowrap; overflow: hidden; }
+.disassembly-meta { min-height: 27px; display: flex; align-items: center; gap: 14px; padding: 0 10px; border-bottom: 1px solid #18232d; background: #0c1319; color: #60788c; font-size: 9px; white-space: nowrap; overflow: hidden; }
+.disassembly-address-search { display: flex; align-items: center; gap: 4px; margin-left: auto; padding-left: 8px; color: #5d7990; }
+.disassembly-address-search input { width: 76px; height: 19px; box-sizing: border-box; border: 1px solid #243847; border-radius: 3px; outline: 0; background: #0a1117; color: #cbd9e5; padding: 0 5px; font: inherit; }
+.disassembly-address-search input::placeholder { color: #526b7d; }
+.disassembly-address-search input:focus { border-color: #3b83ae; box-shadow: 0 0 0 1px rgba(59,131,174,.2); }
+.disassembly-address-search button { height: 19px; border: 1px solid #29485c; border-radius: 3px; background: #10202b; color: #9ab9ce; padding: 0 5px; font: inherit; cursor: pointer; }
+.disassembly-address-search button:hover { border-color: #3d7190; color: #d7e7f2; }
+.disassembly-address-search output { max-width: 132px; overflow: hidden; color: #79bce1; text-overflow: ellipsis; }
+.disassembly-address-search output.not-found { color: #d68a75; }
 .disassembly-scroll { min-height: 0; min-width: 0; overflow: auto; position: relative; background: #090e13; }
 .disassembly-spacer { position: relative; min-width: 940px; }
 .disassembly-window { position: absolute; top: 0; left: 0; right: 0; }
