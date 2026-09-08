@@ -39,6 +39,83 @@ function probeStackWrite(module: UnicornModule, stackTop: number): { supported: 
   }
 }
 
+function probeFsBaseAddressing(module: UnicornModule): { supported: boolean; error: string | null } {
+  const engine = new module.Unicorn(module.ARCH_X86, module.MODE_64);
+  const code = 0x210000;
+  const data = 0x0000_7000_0000_3000;
+  const page = 4096;
+  const fsOffset = 0x20;
+  // mov rax, qword ptr fs:[0x20]
+  const loadFsQword = [0x64, 0x48, 0x8b, 0x04, 0x25, 0x20, 0x00, 0x00, 0x00];
+  try {
+    engine.mem_map(code, page, module.PROT_ALL);
+    engine.mem_write(code, loadFsQword);
+    engine.mem_map(data, page, module.PROT_READ | module.PROT_WRITE);
+    engine.mem_write(data + fsOffset, [0x88, 0x77, 0x66, 0x55, 0x44, 0x33, 0x22, 0x11]);
+    engine.reg_write_i64(module.X86_REG_FS_BASE, BigInt(data));
+    engine.emu_start(code, code + loadFsQword.length, 0, 1);
+    assert.equal(
+      engine.reg_read_i64(module.X86_REG_RAX),
+      0x1122334455667788n,
+      'FS-relative addressing must use X86_REG_FS_BASE at a high guest address'
+    );
+    return { supported: true, error: null };
+  } catch (cause) {
+    let detail = cause instanceof Error ? cause.message : String(cause);
+    try { detail += ` (errno ${engine.errno()}: ${module.strerror(engine.errno())})`; } catch { /* observed exception is sufficient */ }
+    return { supported: false, error: detail };
+  } finally {
+    engine.close();
+  }
+}
+
+function probeMemoryWriteHook(module: UnicornModule): { supported: boolean; error: string | null } {
+  const engine = new module.Unicorn(module.ARCH_X86, module.MODE_64);
+  const code = 0x220000;
+  const data = 0x0000_7000_0000_4000;
+  const page = 4096;
+  // movabs rax,0x700000004000 ; mov dword ptr [rax],2
+  const writeHighDword = [
+    0x48, 0xb8, 0x00, 0x40, 0x00, 0x00, 0x00, 0x70, 0x00, 0x00,
+    0xc7, 0x00, 0x02, 0x00, 0x00, 0x00
+  ];
+  let hook = null as ReturnType<typeof engine.hook_add> | null;
+  let hits = 0;
+  let observedAddress = 0n;
+  let observedSize = 0;
+  let observedValue = 0n;
+  try {
+    engine.mem_map(code, page, module.PROT_ALL);
+    engine.mem_write(code, writeHighDword);
+    engine.mem_map(data, page, module.PROT_READ | module.PROT_WRITE);
+    hook = engine.hook_add(module.HOOK_MEM_WRITE, (...args: unknown[]) => {
+      hits += 1;
+      const addressValue = args[2];
+      const sizeValue = args[3];
+      const writeValue = args[4];
+      observedAddress = typeof addressValue === 'bigint' ? addressValue : BigInt(Number(addressValue));
+      observedSize = Number(sizeValue);
+      observedValue = typeof writeValue === 'bigint' ? writeValue : BigInt(Number(writeValue));
+    }, {}, data, data + 3);
+    engine.emu_start(code, code + writeHighDword.length, 0, 2);
+    assert.equal(hits, 1, 'UC_HOOK_MEM_WRITE must observe exactly one scoped guest write');
+    assert.equal(observedAddress, BigInt(data));
+    assert.equal(observedSize, 4);
+    assert.equal(BigInt.asUintN(32, observedValue), 2n);
+    assert.deepEqual([...engine.mem_read(data, 4)], [0x02, 0x00, 0x00, 0x00]);
+    return { supported: true, error: null };
+  } catch (cause) {
+    let detail = cause instanceof Error ? cause.message : String(cause);
+    try { detail += ` (errno ${engine.errno()}: ${module.strerror(engine.errno())})`; } catch { /* observed exception is sufficient */ }
+    return { supported: false, error: detail };
+  } finally {
+    if (hook) {
+      try { engine.hook_del(hook); } catch { /* engine may already be terminal */ }
+    }
+    engine.close();
+  }
+}
+
 function probeHighRipLoaderPrologue(
   module: UnicornModule,
   hookMode: HighRipHookMode = 'none',
@@ -202,6 +279,8 @@ try {
 
   const lowStack = probeStackWrite(module, 0x7ff00000);
   const highStack = probeStackWrite(module, 0x0000_7fff_ffff_f000);
+  const fsBase = probeFsBaseAddressing(module);
+  const memoryWriteHook = probeMemoryWriteHook(module);
   const highRipLoader = probeHighRipLoaderPrologue(module);
   const highRipCounted = probeHighRipLoaderPrologue(module, 'none', null, 500);
   const highRipCodeHook = probeHighRipLoaderPrologue(module, 'empty');
@@ -212,6 +291,8 @@ try {
   const syscallHook = probeSyscallInsnHook(module);
   assert.equal(lowStack.supported, true, `low-address x86 stack must work: ${lowStack.error ?? ''}`);
   assert.equal(highStack.supported, true, `high-address x86 stack must work: ${highStack.error ?? ''}`);
+  assert.equal(fsBase.supported, true, `high-address FS_BASE addressing must work: ${fsBase.error ?? ''}`);
+  assert.equal(memoryWriteHook.supported, true, `UC_HOOK_MEM_WRITE must preserve high guest addresses and write values: ${memoryWriteHook.error ?? ''}`);
   assert.equal(highRipLoader.supported, true, `high-RIP loader prologue must work: ${highRipLoader.error ?? ''}`);
   assert.equal(highRipCounted.supported, true, `high-RIP loader prologue with Unicorn instruction count must work: ${highRipCounted.error ?? ''}`);
   assert.equal(highRipCodeHook.supported, true, `high-RIP loader prologue with empty UC_HOOK_CODE must work: ${highRipCodeHook.error ?? ''}`);
@@ -222,7 +303,7 @@ try {
   assert.equal(syscallHook.supported, true, `UC_HOOK_INSN syscall interception must work: ${syscallHook.error ?? ''}`);
 
   const summary = report.probes.map((probe) => `${probe.id}=${probe.supported ? 'yes' : 'no'}`).join(' ');
-  console.log(`Unicorn capability smoke: PASS · ${summary} low-stack=yes high-stack=yes high-rip-loader=yes high-rip-counted=yes high-rip-code-hook=yes high-rip-counted-code-hook=yes high-rip-code-hook-read=yes high-rip-code-hook-capstone=yes helper-adapter=yes syscall-hook=yes`);
+  console.log(`Unicorn capability smoke: PASS · ${summary} low-stack=yes high-stack=yes fs-base=yes mem-write-hook=yes high-rip-loader=yes high-rip-counted=yes high-rip-code-hook=yes high-rip-counted-code-hook=yes high-rip-code-hook-read=yes high-rip-code-hook-capstone=yes helper-adapter=yes syscall-hook=yes`);
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }
