@@ -25,6 +25,10 @@ from unicorn_avx2_broadcast import (
     patch_avx2_broadcast_decoder,
     patch_avx2_broadcast_helpers,
 )
+from unicorn_avx2_vpermd import (
+    patch_avx2_vpermd_decoder,
+    patch_avx2_vpermd_helper,
+)
 
 
 def load_base_builder(script_dir: Path):
@@ -60,6 +64,8 @@ def main() -> None:
     patch_avx2_variable_shift_decoder(source_root)
     patch_avx2_broadcast_helpers(source_root)
     patch_avx2_broadcast_decoder(source_root)
+    patch_avx2_vpermd_helper(source_root)
+    patch_avx2_vpermd_decoder(source_root)
     upstream.generateConstants()
     upstream.compileUnicorn(["x86"])
 
