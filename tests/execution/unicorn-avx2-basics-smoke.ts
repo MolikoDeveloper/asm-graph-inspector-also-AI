@@ -74,6 +74,39 @@ function runSemanticClosure(module: UnicornModule): void {
   }
 }
 
+function runRayTestVmovupsSequence(module: UnicornModule): void {
+  const engine = new module.Unicorn(module.ARCH_X86, module.MODE_64);
+  const source = Array.from({ length: 64 }, (_, index) => (0x31 + index * 7) & 0xff);
+  const output = DATA + 0x100;
+
+  // Exact instruction bytes observed in ray_test at RIP 0x433406. The first
+  // VEX3 form is important: B'=0 selects the extended r14 base register.
+  const code = [
+    0xc4, 0xc1, 0x7c, 0x10, 0x06,                   // vmovups ymm0, [r14]
+    0xc4, 0xc1, 0x7c, 0x10, 0x4e, 0x20,             // vmovups ymm1, [r14+0x20]
+    0xc5, 0xfc, 0x11, 0x48, 0x20,                   // vmovups [rax+0x20], ymm1
+    0xc5, 0xfc, 0x11, 0x00                          // vmovups [rax], ymm0
+  ];
+
+  try {
+    engine.mem_map(CODE, PAGE, module.PROT_ALL);
+    engine.mem_map(DATA, PAGE, module.PROT_READ | module.PROT_WRITE);
+    engine.mem_write(CODE, code);
+    engine.mem_write(DATA, source);
+    engine.reg_write_i64(module.X86_REG_R14, BigInt(DATA));
+    engine.reg_write_i64(module.X86_REG_RAX, BigInt(output));
+    engine.emu_start(CODE, CODE + code.length, 0, 0);
+
+    assertBytes(
+      engine.mem_read(output, 64),
+      source,
+      'ray_test VMOVUPS YMM sequence must preserve both 32-byte chunks with an extended r14 base'
+    );
+  } finally {
+    engine.close();
+  }
+}
+
 function assertUnimplementedAvx2StillFailsClosed(module: UnicornModule): void {
   const engine = new module.Unicorn(module.ARCH_X86, module.MODE_64);
   // VPMASKMOVD is a valid AVX2 memory operation that remains outside the
@@ -128,9 +161,10 @@ try {
   const module = await factory();
 
   runSemanticClosure(module);
+  runRayTestVmovupsSequence(module);
   assertUnimplementedAvx2StillFailsClosed(module);
   runBmi2Shlx(module);
-  console.log('Unicorn AVX2 basics smoke: PASS (YMM load/store + 3-operand VPXOR + BMI2 SHLX register/memory + aliasing + VEX.128 zero-upper + fail-closed unaudited remainder)');
+  console.log('Unicorn AVX2 basics smoke: PASS (YMM load/store + ray_test VMOVUPS/r14 + 3-operand VPXOR + BMI2 SHLX register/memory + aliasing + VEX.128 zero-upper + fail-closed unaudited remainder)');
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }
