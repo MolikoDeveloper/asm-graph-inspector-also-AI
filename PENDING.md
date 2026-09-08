@@ -1,5 +1,14 @@
 # Pending migration work
 
+## Current execution architecture
+
+- [x] `asm-source-x86-64`: fast source-semantic NASM-style execution for editor/debugger workflows.
+- [x] `unicorn-machine`: direct x86-64 machine execution for static/fixed-address ELF without a guest OS.
+- [x] `linux-user`: bounded, kernel-less x86-64 Linux userspace on Unicorn/WASM with explicit `PT_INTERP` / `DT_NEEDED` runtime materialization and a narrow TypeScript syscall contract.
+- [x] Close the observed Linux User stdio gap with x86-64 `SYS_writev(20)`, bounded iovec handling, stdout/stderr byte-preserving aggregation and fail-closed writes to the read-only runtime VFS.
+- [x] Keep Linux User single-process/single-thread and fail closed when a futex wait would really block; never fake synchronization success.
+- [ ] `linux-system`: full-system x86-64 machine + real Linux kernel, real guest TTY/devices/filesystem and optional graphical display. This work belongs on a dedicated branch and must not expand the Linux User syscall shim into a second kernel.
+
 ## Completed in this redesign
 
 - [x] React + Vite + TypeScript project layout.
@@ -31,12 +40,11 @@
 - [x] Port the first execution policy/session/provider slice: fixed-address static ELF64 x86-64, PT_LOAD virtual memory, process stack/register state, Capstone-driven stepping, bounded run loop and virtual stdin/stdout/stderr + `read`/`write`/`exit` syscalls.
 - [x] Add raw ASM source execution independent of ELF/Linux: source-PC machine state, labels/branches/calls/stack/registers, source-line stepping and a Linux Lite `read`/`write`/`exit` syscall surface.
 - [x] Project observed execution traces onto the Canvas: current-node focus, visited-node counters and traversed-edge highlighting for source ASM and address-backed binary CFGs.
-- [x] Route PIE / `PT_INTERP` / `DT_NEEDED` Process Sandbox execution to a pinned Blink/WASM provider instead of growing the bounded instruction provider into a Linux dynamic loader.
-- [x] Materialize direct + transitive `DT_NEEDED` closure from Global Dependencies without touching the host filesystem; mount the closure only inside Blink MEMFS.
-- [ ] Finish Blink interactive stdin, syscall/VFS policy interception, execution-event normalization and precise run-quantum instruction accounting.
+- [x] Route dynamic/PIE Linux ELF to the pinned Unicorn/WASM Linux User provider; materialize the real loader/runtime closure and let the guest loader/glibc execute on the emulated CPU without a guest kernel.
+- [x] Materialize direct + transitive `DT_NEEDED` closure from Global Dependencies without touching the host filesystem; expose those bytes to Linux User as read-only virtual runtime files.
+- [x] Run a real host-built dynamic glibc smoke through explicit `ld-linux-x86-64.so.2` + `libc.so.6`, including `puts()`, `writev(2)` output and clean `exit(0)`.
 - [ ] Add project bundle import/export and analysis-cache persistence.
 - [ ] Move heavy ELF/Capstone/dataflow work to Web Workers.
-- [ ] Harden Process Sandbox beyond the first Blink integration: syscall/VFS policy interception, signals/threads, runtime module/load-bias observations, breakpoints, deterministic recordings and richer process IO.
 - [ ] Restore full `ray_test` regression under the modular engine.
 
 ## UX follow-up
@@ -60,26 +68,39 @@
 - [x] Persist imported global ELF files independently of project storage.
 - [x] Persist authorized library directory handles where the browser supports File System Access API handles in IndexedDB.
 - [x] Resolve `DT_NEEDED` by exact SONAME / filename and report permission-required separately from unresolved.
-- [x] Materialize recursive dynamic dependency bytes for Process Sandbox execution through exact filename/DT_SONAME resolution.
+- [x] Materialize recursive dynamic dependency bytes for Linux User execution through exact filename/DT_SONAME resolution.
 - [x] Show recursive dependency preflight in Binary Map (PT_INTERP, direct DT_NEEDED and transitive DT_NEEDED with parent/depth evidence), including lazy migration of older imported-library records.
 - [x] Build an ELF-wide interprocedural call graph from discovered functions without requiring the user to open each function; keep direct CALL/tail-call evidence and the proven libc startup handoff.
-- [ ] Load dependency images into separate **analysis** address spaces and expose cross-library symbol/call edges; runtime Blink loading remains observed state and must not mutate static IR.
+- [ ] Load dependency images into separate **analysis** address spaces and expose cross-library symbol/call edges; runtime loading remains observed state and must not mutate static IR.
 - [ ] Add project-local dependency overrides with precedence above global dependencies.
 - [ ] Add dependency indexing/virtualization for very large library roots instead of exact-name lookup only.
 
-## Execution follow-up after V11
+## Linux User boundary
 
-- [ ] Replace source-semantic raw ASM execution with an optional real assembler-backed byte path (NASM/FASM-compatible) while preserving the current source mapping for debugger UX.
-- [ ] Expand Linux Lite only as a bounded syscall provider; do not turn it into a second dynamic loader/process emulator.
+- [x] Preserve the bounded syscall provider as a deliberate compatibility layer, not a general-purpose Linux kernel implementation.
+- [x] Support the syscall subset required by the current loader/glibc baseline, including memory management, loader file reads, process identity/time/random basics, `read`, `write`, `writev`, and exit.
+- [x] Keep runtime ELF files read-only; `write`/`writev` to non-stdio descriptors fail instead of mutating dependency/program bytes.
+- [x] Bound scalar IO to 1 MiB per syscall and `writev` to at most 1024 iovecs with the same aggregate 1 MiB budget.
+- [x] Keep unsupported syscalls explicit; do not silently return success.
+- [x] Keep true blocking/thread semantics out of Linux User; a matching futex WAIT traps as would-block rather than pretending progress.
+- [ ] Add further Linux User syscalls only when a concrete supported workload demonstrates that they are small, deterministic and compatible with this boundary.
+- [ ] Do not add devices, a writable root filesystem, real process scheduling, X11, kernel networking or general thread support here; those belong to Linux System.
 
-- [x] Route dynamic Process Sandbox Run through Blink headless `run_fast` + preemption resume instead of debugger `continue`.
-- [x] Keep headless Run register state explicitly unavailable rather than exposing stale `clstruct` pointers.
-- [x] Follow paused execution in the UI: reveal the live PC in binary disassembly, switch binary graphs to Function CFG during stepping and focus the current basic block on the canvas.
-- [ ] Extend the vendored Blink ABI with register snapshots that do not depend on its internal disassembler, then unify Step and Run without a Reset boundary.
-- [x] Capture Blink/Emscripten provider diagnostics (`print`, `printErr`, `onAbort`) in execution snapshots; aggregate repeated host warnings and preserve thrown WASM stacks instead of relying on browser DevTools.
-- [x] Root-cause the glibc startup rejection for the minimal dynamic `puts()` ELF: the upstream browser Blink build disables x87/FPU and therefore advertises less than glibc `x86-64-baseline`.
-- [x] Replace acceptance of the upstream prebuilt Blink payload with a pinned source build profile enabling x87/FPU, MMX and Linux non-POSIX APIs while keeping JIT disabled; validate the generated profile before execution.
-- [ ] Run the rebuilt baseline Blink against a real uploaded `ld-linux-x86-64.so.2` + `libc.so.6` pair and promote the dynamic `puts()` fixture to a zero-UI regression test once it reaches stdout + exit(0).
+## Linux System handoff
+
+- [ ] Prototype a full-system x86-64 backend in a dedicated branch without changing the stable Linux User contract on `master`.
+- [ ] Pin and audit the full-system emulator/toolchain before vendoring any new runtime assets.
+- [ ] Gate the architecture on a real Linux kernel boot, guest TTY, AVX2 execution and browser-persistent workspace storage before adding graphical work.
+- [ ] Keep the root system image immutable/cached where practical; persist project-owned changes separately through browser storage.
+- [ ] Add framebuffer/X11 only after the CPU/kernel/TTY/storage path is stable and measured.
+
+## Legacy Blink cleanup / reference work
+
+Blink remains useful as historical implementation evidence and for regression/reference tests, but it is no longer the normal dynamic ELF route.
+
+- [ ] Decide which Blink-specific tests/build assets still provide unique regression value after Linux User stabilization.
+- [ ] Remove or archive Blink-only UI/docs paths that claim it is the active Process Sandbox when they no longer match routing.
+- [ ] Preserve any useful ISA/preflight or diagnostic lessons when retiring redundant Blink code.
 
 ## Headless execution follow-up
 
@@ -88,5 +109,5 @@
 - [x] Add a Bun CLI that auto-detects ASM vs ELF and supports JSON/trace output.
 - [x] Add zero-UI smoke tests for ASM and static ELF.
 - [x] Load vendored Capstone WASM from the headless runtime rather than through `window`/`document`.
-- [ ] Make `blink-process` reliable in a headless runtime so dynamic ELF (`PT_INTERP` / `DT_NEEDED`) can use the same CLI contract.
+- [ ] Route prepared dynamic Linux ELF through the same Linux User contract in headless mode when explicit runtime dependencies are supplied.
 - [ ] Replace source-semantic ASM execution with an assembler-backed machine-byte path while preserving source mapping and execution events.
