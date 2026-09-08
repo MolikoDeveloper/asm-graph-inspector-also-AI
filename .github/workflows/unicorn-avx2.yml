@@ -69,5 +69,8 @@ jobs:
       - name: AVX2 variable-count shift semantics
         run: bun tests/execution/unicorn-avx2-variable-shifts-smoke.ts
 
+      - name: AVX2 integer broadcast semantics
+        run: bun tests/execution/unicorn-avx2-broadcast-smoke.ts
+
       - name: Typecheck
         run: bun run typecheck
