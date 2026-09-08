@@ -76,10 +76,10 @@ function runSemanticClosure(module: UnicornModule): void {
 
 function assertUnimplementedAvx2StillFailsClosed(module: UnicornModule): void {
   const engine = new module.Unicorn(module.ARCH_X86, module.MODE_64);
-  // VPADDB ymm0, ymm1, ymm2 is intentionally outside the initial audited
+  // VPMULLW ymm0, ymm1, ymm2 remains intentionally outside the audited
   // closure. Keeping this rejection explicit prevents the VEX.L gate from
   // accidentally becoming a blanket "AVX2 supported" switch.
-  const unsupported = [0xc5, 0xf5, 0xfc, 0xc2];
+  const unsupported = [0xc5, 0xf5, 0xd5, 0xc2];
   try {
     engine.mem_map(CODE, PAGE, module.PROT_ALL);
     engine.mem_write(CODE, unsupported);
