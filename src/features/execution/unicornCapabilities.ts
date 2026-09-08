@@ -1,7 +1,7 @@
 import type { UnicornEngine, UnicornModule } from './unicornTypes';
 import { currentUnicornX86, loadUnicornX86 } from './unicornLoader';
 
-export type UnicornCapabilityId = 'baseline' | 'cpuid' | 'xgetbv' | 'sse2' | 'avx' | 'avx2';
+export type UnicornCapabilityId = 'baseline' | 'cpuid' | 'xgetbv' | 'sse2' | 'avx' | 'avx2-subset';
 
 export interface UnicornCapabilityProbe {
   id: UnicornCapabilityId;
@@ -15,18 +15,28 @@ export interface UnicornCapabilityReport {
   version: string;
   architecture: 'x86-64';
   evidence: 'observed-unicorn-execution';
+  scope: 'observed-probes';
+  /**
+   * Null until a complete ISA level is both implemented and validated. Individual
+   * probes — including avx2-subset — are execution evidence, not an ISA promise.
+   */
+  completeIsaLevel: null;
   probes: UnicornCapabilityProbe[];
 }
 
 type ProbeDefinition = Readonly<{ id: UnicornCapabilityId; label: string; bytes: number[] }>;
 
 const PROBES: ReadonlyArray<ProbeDefinition> = [
-  { id: 'baseline', label: 'x86-64 baseline', bytes: [0x48, 0xc7, 0xc0, 0x2a, 0x00, 0x00, 0x00] }, // mov rax, 42
-  { id: 'cpuid', label: 'CPUID', bytes: [0x0f, 0xa2] },
-  { id: 'xgetbv', label: 'XGETBV', bytes: [0x0f, 0x01, 0xd0] }, // ECX defaults to XCR0
-  { id: 'sse2', label: 'SSE2', bytes: [0x66, 0x0f, 0xef, 0xc0] }, // pxor xmm0, xmm0
-  { id: 'avx', label: 'AVX 3-operand XOR semantics', bytes: [0xc5, 0xf0, 0x57, 0xc2] }, // vxorps xmm0,xmm1,xmm2
-  { id: 'avx2', label: 'AVX2 256-bit XOR + move semantics', bytes: [0xc5, 0xf5, 0xef, 0xc2] } // vpxor ymm0,ymm1,ymm2
+  { id: 'baseline', label: 'x86-64 baseline probe', bytes: [0x48, 0xc7, 0xc0, 0x2a, 0x00, 0x00, 0x00] }, // mov rax, 42
+  { id: 'cpuid', label: 'CPUID probe', bytes: [0x0f, 0xa2] },
+  { id: 'xgetbv', label: 'XGETBV probe', bytes: [0x0f, 0x01, 0xd0] }, // ECX defaults to XCR0
+  { id: 'sse2', label: 'SSE2 probe', bytes: [0x66, 0x0f, 0xef, 0xc0] }, // pxor xmm0, xmm0
+  { id: 'avx', label: 'AVX 3-operand XOR probe', bytes: [0xc5, 0xf0, 0x57, 0xc2] }, // vxorps xmm0,xmm1,xmm2
+  {
+    id: 'avx2-subset',
+    label: 'AVX2 audited-subset probe (256-bit move + 3-operand XOR)',
+    bytes: [0xc5, 0xf5, 0xef, 0xc2] // vpxor ymm0,ymm1,ymm2
+  }
 ];
 
 const PROBE_ADDRESS = 0x100000;
@@ -94,21 +104,21 @@ function runVectorXorProbe(
 
   // Keep setup/observation outside the instruction under test whenever possible.
   // AVX uses legacy MOVDQU around a VEX.128 VXORPS so vvvv/three-operand semantics
-  // are verified independently of VEX moves. AVX2 necessarily exercises the
-  // minimal 256-bit VMOVDQU + VPXOR closure because legacy SSE cannot seed or
-  // observe the upper 128-bit YMM lane.
+  // are verified independently of VEX moves. The AVX2-subset probe necessarily
+  // exercises the minimal 256-bit VMOVDQU + VPXOR closure because legacy SSE
+  // cannot seed or observe the upper 128-bit YMM lane.
   const code = width === 16
     ? [
-        0xf3, 0x0f, 0x6f, 0x08,                   // movdqu xmm1, [rax]
-        0xf3, 0x0f, 0x6f, 0x50, 0x10,             // movdqu xmm2, [rax+0x10]
-        ...probe.bytes,                            // vxorps xmm0, xmm1, xmm2
-        0xf3, 0x0f, 0x7f, 0x40, 0x20              // movdqu [rax+0x20], xmm0
+        0xf3, 0x0f, 0x6f, 0x08,
+        0xf3, 0x0f, 0x6f, 0x50, 0x10,
+        ...probe.bytes,
+        0xf3, 0x0f, 0x7f, 0x40, 0x20
       ]
     : [
-        0xc5, 0xfe, 0x6f, 0x08,                   // vmovdqu ymm1, [rax]
-        0xc5, 0xfe, 0x6f, 0x50, 0x20,             // vmovdqu ymm2, [rax+0x20]
-        ...probe.bytes,                            // vpxor ymm0, ymm1, ymm2
-        0xc5, 0xfe, 0x7f, 0x40, 0x40              // vmovdqu [rax+0x40], ymm0
+        0xc5, 0xfe, 0x6f, 0x08,
+        0xc5, 0xfe, 0x6f, 0x50, 0x20,
+        ...probe.bytes,
+        0xc5, 0xfe, 0x7f, 0x40, 0x40
       ];
   const sourceBOffset = width;
   const outputOffset = width * 2;
@@ -132,7 +142,7 @@ function runVectorXorProbe(
 
 function runProbe(module: UnicornModule, probe: ProbeDefinition): UnicornCapabilityProbe {
   if (probe.id === 'avx') return runVectorXorProbe(module, probe, 16);
-  if (probe.id === 'avx2') return runVectorXorProbe(module, probe, 32);
+  if (probe.id === 'avx2-subset') return runVectorXorProbe(module, probe, 32);
   return runInstructionProbe(module, probe);
 }
 
@@ -141,6 +151,8 @@ export function probeUnicornModule(module: UnicornModule): UnicornCapabilityRepo
     version: versionString(module),
     architecture: 'x86-64',
     evidence: 'observed-unicorn-execution',
+    scope: 'observed-probes',
+    completeIsaLevel: null,
     probes: PROBES.map((probe) => runProbe(module, probe))
   };
 }
