@@ -30,6 +30,7 @@ from unicorn_avx2_vpermd import (
     patch_avx2_vpermd_helper,
 )
 from unicorn_avx_extension import patch_avx_map1_binary_and_moves
+from unicorn_avx_zero_state import patch_avx_zero_state
 
 
 def load_base_builder(script_dir: Path):
@@ -68,6 +69,7 @@ def main() -> None:
     patch_avx2_vpermd_helper(source_root)
     patch_avx2_vpermd_decoder(source_root)
     patch_avx_map1_binary_and_moves(source_root)
+    patch_avx_zero_state(source_root)
     upstream.generateConstants()
     upstream.compileUnicorn(["x86"])
 
