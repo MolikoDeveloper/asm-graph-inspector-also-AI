@@ -19,6 +19,14 @@ import { loadHeadlessCapstone } from '../../scripts/headless-capstone';
 const INVOKE_DIAGNOSTIC_KEY = '__asmGraphUnicornInvokeIijjii';
 type InvokeDiagnosticGlobal = typeof globalThis & { [INVOKE_DIAGNOSTIC_KEY]?: unknown[] };
 
+interface RuntimeDiagnosticTarget {
+  name: string;
+  role: 'interpreter' | 'dependency';
+  path: string;
+  image: LoadedImage;
+  bytes: ArrayBuffer;
+}
+
 function exactArrayBuffer(bytes: Uint8Array): ArrayBuffer {
   return bytes.buffer.slice(bytes.byteOffset, bytes.byteOffset + bytes.byteLength) as ArrayBuffer;
 }
@@ -92,65 +100,73 @@ function captureUnicornEmulationErrors(module: UnicornModule, capture: (stack: s
   });
 }
 
-function runtimeLoaderImageAddress(snapshot: ExecutionSnapshot): number | null {
-  const rip = snapshot.registers?.rip;
+function activeRuntimeTarget(snapshot: ExecutionSnapshot, targets: RuntimeDiagnosticTarget[]): RuntimeDiagnosticTarget | null {
   const runtimeImage = snapshot.runtimeDisassembly?.image;
-  if (rip === null || rip === undefined || !runtimeImage || runtimeImage.role !== 'interpreter') return null;
-  const imageAddress = Number(rip - runtimeImage.loadBias);
-  return Number.isSafeInteger(imageAddress) && imageAddress >= 0 ? imageAddress : null;
+  if (!runtimeImage) return null;
+  return targets.find((target) => target.role === runtimeImage.role && target.name === runtimeImage.name) ?? null;
 }
 
-function decodeRuntimeRip(snapshot: ExecutionSnapshot, loaderImage: LoadedImage, loaderBytes: ArrayBuffer, capstone: CapstoneModule): string {
-  const rip = snapshot.registers?.rip;
-  const imageAddress = runtimeLoaderImageAddress(snapshot);
-  if (rip === null || rip === undefined || imageAddress === null) return 'fault=<unresolved>';
+function activeRuntimeImageAddress(snapshot: ExecutionSnapshot, targets: RuntimeDiagnosticTarget[]): { target: RuntimeDiagnosticTarget; address: number } | null {
+  const target = activeRuntimeTarget(snapshot, targets);
+  const runtimeImage = snapshot.runtimeDisassembly?.image;
+  if (!target || !runtimeImage) return null;
+  const address = Number(runtimeImage.imageAddress);
+  return Number.isSafeInteger(address) && address >= 0 ? { target, address } : null;
+}
+
+function decodeRuntimeRip(snapshot: ExecutionSnapshot, targets: RuntimeDiagnosticTarget[], capstone: CapstoneModule): string {
+  const active = activeRuntimeImageAddress(snapshot, targets);
+  if (!active) return 'fault=<unresolved>';
+  const { target, address } = active;
   try {
     const decoder = createX86_64InstructionDecoder(capstone);
     try {
-      const bytes = executableBytesForRange(loaderImage, loaderBytes, imageAddress, 15);
-      const instruction = decoder.decodeOne(bytes, imageAddress);
+      const bytes = executableBytesForRange(target.image, target.bytes, address, 15);
+      const instruction = decoder.decodeOne(bytes, address);
       const hex = [...bytes.subarray(0, Math.min(bytes.length, instruction?.size ?? bytes.length))].map((byte) => byte.toString(16).padStart(2, '0')).join(' ');
       return instruction
-        ? `fault=0x${imageAddress.toString(16)} ${instruction.mnemonic}${instruction.operands ? ` ${instruction.operands}` : ''} [${hex}]`
-        : `fault=0x${imageAddress.toString(16)} <Capstone undecoded> [${hex}]`;
+        ? `fault=${target.name}+0x${address.toString(16)} ${instruction.mnemonic}${instruction.operands ? ` ${instruction.operands}` : ''} [${hex}]`
+        : `fault=${target.name}+0x${address.toString(16)} <Capstone undecoded> [${hex}]`;
     } finally {
       decoder.close();
     }
   } catch (error) {
-    return `fault=0x${imageAddress.toString(16)} decode-error=${error instanceof Error ? error.message : String(error)}`;
+    return `fault=${target.name}+0x${address.toString(16)} decode-error=${error instanceof Error ? error.message : String(error)}`;
   }
 }
 
-function loaderCodeWindow(snapshot: ExecutionSnapshot, loaderPath: string): string {
-  const imageAddress = runtimeLoaderImageAddress(snapshot);
-  if (imageAddress === null) return 'loader-window=<unresolved>';
-  const start = Math.max(0, imageAddress - 0x30);
-  const stop = imageAddress + 0x600;
+function runtimeCodeWindow(snapshot: ExecutionSnapshot, targets: RuntimeDiagnosticTarget[]): string {
+  const active = activeRuntimeImageAddress(snapshot, targets);
+  if (!active) return 'runtime-window=<unresolved>';
+  const { target, address } = active;
+  const start = Math.max(0, address - 0x80);
+  const stop = address + 0x180;
   try {
     const text = execFileSync('objdump', [
       '-d',
       `--start-address=0x${start.toString(16)}`,
       `--stop-address=0x${stop.toString(16)}`,
-      loaderPath
+      target.path
     ], { encoding: 'utf8' });
-    return `loader-window=\n${text.trim()}`;
+    return `runtime-window(${target.name})=\n${text.trim()}`;
   } catch (cause) {
-    return `loader-window=<objdump-error ${cause instanceof Error ? cause.message : String(cause)}>`;
+    return `runtime-window(${target.name})=<objdump-error ${cause instanceof Error ? cause.message : String(cause)}>`;
   }
 }
 
-function loaderSymbolContext(snapshot: ExecutionSnapshot, loaderPath: string): string {
-  const imageAddress = runtimeLoaderImageAddress(snapshot);
-  if (imageAddress === null) return 'loader-symbol=<unresolved>';
+function runtimeSymbolContext(snapshot: ExecutionSnapshot, targets: RuntimeDiagnosticTarget[]): string {
+  const active = activeRuntimeImageAddress(snapshot, targets);
+  if (!active) return 'runtime-symbol=<unresolved>';
+  const { target, address } = active;
   try {
-    const text = execFileSync('addr2line', ['-f', '-C', '-e', loaderPath, `0x${imageAddress.toString(16)}`], { encoding: 'utf8' }).trim();
-    return `loader-symbol=${text.replace(/\n/g, ' / ')}`;
+    const text = execFileSync('addr2line', ['-f', '-C', '-e', target.path, `0x${address.toString(16)}`], { encoding: 'utf8' }).trim();
+    return `runtime-symbol(${target.name})=${text.replace(/\n/g, ' / ')}`;
   } catch (cause) {
-    return `loader-symbol=<addr2line-error ${cause instanceof Error ? cause.message : String(cause)}>`;
+    return `runtime-symbol(${target.name})=<addr2line-error ${cause instanceof Error ? cause.message : String(cause)}>`;
   }
 }
 
-function failureContext(snapshot: ExecutionSnapshot, fault: string, loaderPath: string, wasmStack: string | null): string {
+function failureContext(snapshot: ExecutionSnapshot, fault: string, targets: RuntimeDiagnosticTarget[], wasmStack: string | null): string {
   const instruction = snapshot.lastInstruction
     ? `last=0x${snapshot.lastInstruction.address.toString(16)} ${snapshot.lastInstruction.mnemonic}${snapshot.lastInstruction.operands ? ` ${snapshot.lastInstruction.operands}` : ''}`
     : 'last=<none>';
@@ -183,8 +199,8 @@ function failureContext(snapshot: ExecutionSnapshot, fault: string, loaderPath: 
     `provider=${diagnostics || '<none>'}`,
     `wasm-stack=${wasmStack ? wasmStack.replace(/\n/g, ' <- ') : '<none>'}`,
     currentInvokeDiagnostic(),
-    loaderSymbolContext(snapshot, loaderPath),
-    loaderCodeWindow(snapshot, loaderPath)
+    runtimeSymbolContext(snapshot, targets),
+    runtimeCodeWindow(snapshot, targets)
   ].join(' ; ');
 }
 
@@ -222,6 +238,11 @@ try {
   const loaderName = image.interpreter!.split('/').at(-1)!;
   const modules = [materialized(loaderName, loaderPath), materialized('libc.so.6', libcPath)];
   const loaderImage = parseElfImage('dynamic-loader-fixture', loaderName, modules[0].bytes);
+  const libcImage = parseElfImage('dynamic-libc-fixture', 'libc.so.6', modules[1].bytes);
+  const diagnosticTargets: RuntimeDiagnosticTarget[] = [
+    { name: loaderName, role: 'interpreter', path: loaderPath, image: loaderImage, bytes: modules[0].bytes },
+    { name: 'libc.so.6', role: 'dependency', path: libcPath, image: libcImage, bytes: modules[1].bytes }
+  ];
   const closure: RuntimeDependencyClosure = {
     interpreterPath: image.interpreter,
     modules,
@@ -254,8 +275,8 @@ try {
       snapshot = session.runSlice(500);
       if (snapshot.status === 'exited' || snapshot.status === 'trapped' || snapshot.status === 'halted') break;
     }
-    const fault = decodeRuntimeRip(snapshot, loaderImage, modules[0].bytes, capstone);
-    assert.equal(snapshot.status, 'exited', failureContext(snapshot, fault, loaderPath, internalUnicornStack));
+    const fault = decodeRuntimeRip(snapshot, diagnosticTargets, capstone);
+    assert.equal(snapshot.status, 'exited', failureContext(snapshot, fault, diagnosticTargets, internalUnicornStack));
     assert.equal(snapshot.exitCode, 0);
     assert.match(snapshot.stdout, /hello from unicorn dynamic glibc/);
     assert.ok(snapshot.events.some((event) => event.kind === 'trace-gap'), 'dynamic startup must cross loader/dependency execution boundaries');
