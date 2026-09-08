@@ -38,6 +38,7 @@ export interface UnicornModule {
   PROT_ALL: number;
   HOOK_CODE: number;
   HOOK_INSN: number;
+  HOOK_MEM_WRITE: number;
   X86_INS_SYSCALL: number;
   X86_REG_RAX: number;
   X86_REG_RBX: number;
