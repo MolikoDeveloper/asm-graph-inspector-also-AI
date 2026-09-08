@@ -81,12 +81,16 @@ const SEEK_END = 2;
 const MAP_FIXED = 0x10;
 const MAP_ANONYMOUS = 0x20;
 const MAP_FIXED_NOREPLACE = 0x100000;
+const FUTEX_WAIT = 0;
+const FUTEX_WAKE = 1;
+const FUTEX_CMD_MASK = 0x7f;
 const ARCH_SET_GS = 0x1001;
 const ARCH_SET_FS = 0x1002;
 const ARCH_GET_FS = 0x1003;
 const ARCH_GET_GS = 0x1004;
 const ENOENT = 2;
 const EBADF = 9;
+const EAGAIN = 11;
 const EACCES = 13;
 const EINVAL = 22;
 const ENOTTY = 25;
@@ -722,6 +726,35 @@ export class UnicornLinuxProcessSession {
     this.recordSyscall(number, 'arch_prctl', `op=0x${operation.toString(16)}`);
   }
 
+  private syscallFutex(number: number): void {
+    const address = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI), 'futex address');
+    const operation = Number(this.engine.reg_read_i64(this.unicorn.X86_REG_RSI));
+    const expected = Number(BigInt.asUintN(32, this.engine.reg_read_i64(this.unicorn.X86_REG_RDX)));
+    const command = operation & FUTEX_CMD_MASK;
+
+    if (command === FUTEX_WAIT) {
+      const bytes = this.engine.mem_read(address, 4);
+      const current = new DataView(bytes.buffer, bytes.byteOffset, bytes.byteLength).getUint32(0, true);
+      if (current !== expected) {
+        this.failSyscall(EAGAIN);
+        this.recordSyscall(number, 'futex', `WAIT op=0x${operation.toString(16)}, address=0x${address.toString(16)}, expected=${expected}, current=${current} -> -${EAGAIN}`);
+        return;
+      }
+      this.recordSyscall(number, 'futex', `WAIT op=0x${operation.toString(16)}, address=0x${address.toString(16)}, expected=${expected}, current=${current} -> would-block`);
+      this.trap(`Linux futex WAIT at 0x${address.toString(16)} would block in the single-thread Unicorn userspace contract (value ${current} matched expected ${expected}).`);
+      return;
+    }
+
+    if (command === FUTEX_WAKE) {
+      this.setSyscallResult(0);
+      this.recordSyscall(number, 'futex', `WAKE op=0x${operation.toString(16)}, address=0x${address.toString(16)} -> 0 waiters`);
+      return;
+    }
+
+    this.failSyscall(ENOSYS);
+    this.recordSyscall(number, 'futex', `op=0x${operation.toString(16)} -> -${ENOSYS}`);
+  }
+
   private virtualSyscall(nextRip: bigint): void {
     if (this.policy.syscallPolicy === 'none') { this.trap('Linux syscalls are disabled by execution policy.'); return; }
     const number = Number(this.engine.reg_read_i64(this.unicorn.X86_REG_RAX));
@@ -866,6 +899,7 @@ export class UnicornLinuxProcessSession {
       }
       if (number === SYS_BRK) { this.syscallBrk(number); return; }
       if (number === SYS_ARCH_PRCTL) { this.syscallArchPrctl(number); return; }
+      if (number === SYS_FUTEX) { this.syscallFutex(number); return; }
       if (number === SYS_CLOCK_GETTIME) {
         const clockId = Number(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI));
         const address = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RSI), 'clock_gettime output');
@@ -927,7 +961,7 @@ export class UnicornLinuxProcessSession {
         this.setSyscallResult(0);
         return;
       }
-      if (number === SYS_RT_SIGACTION || number === SYS_RT_SIGPROCMASK || number === SYS_SET_ROBUST_LIST || number === SYS_MADVISE || number === SYS_FUTEX) {
+      if (number === SYS_RT_SIGACTION || number === SYS_RT_SIGPROCMASK || number === SYS_SET_ROBUST_LIST || number === SYS_MADVISE) {
         this.setSyscallResult(0);
         return;
       }
