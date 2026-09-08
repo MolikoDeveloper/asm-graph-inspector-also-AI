@@ -30,6 +30,8 @@ const PIE_BASE = 0x0000_5555_5555_4000;
 const INTERPRETER_BASE = 0x0000_7f00_0000_0000;
 const MMAP_BASE = 0x0000_7000_0000_0000;
 const MAX_IO_BYTES = 1024 * 1024;
+const MAX_IOV_COUNT = 1024;
+const IOVEC_SIZE = 16;
 const MAX_PATH_BYTES = 4096;
 const MAX_X86_INSTRUCTION_BYTES = 15;
 const EMULATION_UNTIL = 0xffff_ffff_ffff_ffffn;
@@ -49,6 +51,7 @@ const SYS_RT_SIGACTION = 13;
 const SYS_RT_SIGPROCMASK = 14;
 const SYS_IOCTL = 16;
 const SYS_PREAD64 = 17;
+const SYS_WRITEV = 20;
 const SYS_ACCESS = 21;
 const SYS_MADVISE = 28;
 const SYS_GETPID = 39;
@@ -672,6 +675,65 @@ export class UnicornLinuxProcessSession {
     return available;
   }
 
+  private appendTerminalBytes(fd: number, bytes: Uint8Array): number {
+    if (fd !== 1 && fd !== 2) return -EBADF;
+    if (!bytes.byteLength) return 0;
+    const text = new TextDecoder().decode(bytes);
+    if (fd === 1) {
+      this.stdoutValue += text;
+      appendEvent(this.eventsValue, { kind: 'stdout', text });
+    } else {
+      this.stderrValue += text;
+      appendEvent(this.eventsValue, { kind: 'stderr', text });
+    }
+    return bytes.byteLength;
+  }
+
+  private writeGuestBytes(fd: number, address: bigint, count: number): number {
+    if (count > MAX_IO_BYTES) throw new Error(`write count ${count} exceeds the execution IO limit.`);
+    if (fd !== 1 && fd !== 2) return -EBADF;
+    return this.appendTerminalBytes(fd, this.engine.mem_read(address, count));
+  }
+
+  private syscallWritev(number: number): void {
+    const fd = signedNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI));
+    const vectorAddress = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RSI), 'writev iovec address');
+    const vectorCount = signedNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDX));
+    if (vectorCount < 0 || vectorCount > MAX_IOV_COUNT) {
+      this.failSyscall(EINVAL);
+      this.recordSyscall(number, 'writev', `fd=${fd}, iovcnt=${vectorCount} -> -${EINVAL}`);
+      return;
+    }
+    if (fd !== 1 && fd !== 2) {
+      this.failSyscall(EBADF);
+      this.recordSyscall(number, 'writev', `fd=${fd}, iovcnt=${vectorCount} -> -${EBADF}`);
+      return;
+    }
+
+    const chunks: Uint8Array[] = [];
+    let total = 0;
+    for (let index = 0; index < vectorCount; index += 1) {
+      const entryAddress = vectorAddress + index * IOVEC_SIZE;
+      if (!Number.isSafeInteger(entryAddress)) throw new Error(`writev iovec[${index}] address is outside the browser-safe integer range.`);
+      const entry = this.engine.mem_read(entryAddress, IOVEC_SIZE);
+      const view = new DataView(entry.buffer, entry.byteOffset, entry.byteLength);
+      const address = view.getBigUint64(0, true);
+      const count = safeNumber(view.getBigUint64(8, true), `writev iovec[${index}] length`);
+      if (count > MAX_IO_BYTES - total) throw new Error(`writev total ${total + count} exceeds the execution IO limit.`);
+      if (count > 0) chunks.push(this.engine.mem_read(address, count));
+      total += count;
+    }
+
+    const bytes = new Uint8Array(total);
+    let cursor = 0;
+    for (const chunk of chunks) {
+      bytes.set(chunk, cursor);
+      cursor += chunk.byteLength;
+    }
+    this.setSyscallResult(this.appendTerminalBytes(fd, bytes));
+    this.recordSyscall(number, 'writev', `fd=${fd}, iovcnt=${vectorCount}, count=${total}`);
+  }
+
   private syscallMmap(number: number): void {
     const requestedAddress = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI), 'mmap address');
     const length = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RSI), 'mmap length');
@@ -775,16 +837,12 @@ export class UnicornLinuxProcessSession {
         const fd = signedNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI));
         const address = this.engine.reg_read_i64(this.unicorn.X86_REG_RSI);
         const count = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDX), 'write count');
-        if (count > MAX_IO_BYTES) throw new Error(`write count ${count} exceeds the execution IO limit.`);
-        if (fd === 1 || fd === 2) {
-          const text = new TextDecoder().decode(this.engine.mem_read(address, count));
-          if (fd === 1) { this.stdoutValue += text; appendEvent(this.eventsValue, { kind: 'stdout', text }); }
-          else { this.stderrValue += text; appendEvent(this.eventsValue, { kind: 'stderr', text }); }
-          this.setSyscallResult(count);
-        } else this.setSyscallResult(this.copyFileBytes(fd, address, count, null));
-        this.recordSyscall(number, 'write', `fd=${fd}, count=${count}`);
+        const result = this.writeGuestBytes(fd, address, count);
+        this.setSyscallResult(result);
+        this.recordSyscall(number, 'write', `fd=${fd}, count=${count}${result < 0 ? ` -> ${result}` : ''}`);
         return;
       }
+      if (number === SYS_WRITEV) { this.syscallWritev(number); return; }
       if (number === SYS_READ) {
         const fd = signedNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI));
         const address = this.engine.reg_read_i64(this.unicorn.X86_REG_RSI);
