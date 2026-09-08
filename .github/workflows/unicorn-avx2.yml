@@ -2,7 +2,7 @@ name: Unicorn AVX2 validation
 
 on:
   push:
-    branches: [feature/unicorn-avx2]
+    branches: [feature/unicorn-avx2, feature/unicorn-avx-complete]
   pull_request:
     branches: [master]
   workflow_dispatch:
@@ -41,6 +41,9 @@ jobs:
       - name: Build patched Unicorn x86 runtime
         run: bun run vendor:unicorn
 
+      - name: Vendor pinned NASM + GNU ld
+        run: bun run vendor:toolchain
+
       - name: Unicorn capability smoke
         run: bun tests/execution/unicorn-capabilities-smoke.ts
 
@@ -74,8 +77,20 @@ jobs:
       - name: AVX2 integer broadcast semantics
         run: bun tests/execution/unicorn-avx2-broadcast-smoke.ts
 
+      - name: AVX floating-point broadcast semantics
+        run: bun tests/execution/unicorn-avx-fp-broadcast-smoke.ts
+
+      - name: AVX VPTEST semantics
+        run: bun tests/execution/unicorn-avx-vptest-smoke.ts
+
+      - name: AVX VPMOVMSKB semantics
+        run: bun tests/execution/unicorn-avx-vpmovmskb-smoke.ts
+
       - name: AVX2 VPERMD cross-lane semantics
         run: bun tests/execution/unicorn-avx2-vpermd-smoke.ts
+
+      - name: Requested AVX instruction matrix
+        run: bun tests/execution/unicorn-avx-requested-matrix-smoke.ts
 
       - name: Build Blink WASM runtime
         run: bun run vendor:blink

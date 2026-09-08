@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the pinned Unicorn.js x86 runtime with the AVX2 feature-branch layer.
+"""Build the pinned Unicorn.js x86 runtime with audited AVX/AVX2 layers.
 
 Keep the stable WASM correctness repairs in build-patched-unicorn.py. This
 wrapper reuses those repairs, applies the incremental AVX/AVX2 translator
@@ -29,6 +29,14 @@ from unicorn_avx2_vpermd import (
     patch_avx2_vpermd_decoder,
     patch_avx2_vpermd_helper,
 )
+from unicorn_avx_fp_broadcast import (
+    patch_avx_fp_broadcast_decoder,
+    patch_avx_fp_broadcast_helper,
+)
+from unicorn_avx_vptest import patch_avx_vptest_decoder, patch_avx_vptest_helper
+from unicorn_avx_extension import patch_avx_map1_binary_and_moves
+from unicorn_avx_vpmovmskb import patch_avx_vpmovmskb_decoder
+from unicorn_avx_zero_state import patch_avx_zero_state
 
 
 def load_base_builder(script_dir: Path):
@@ -66,15 +74,22 @@ def main() -> None:
     patch_avx2_broadcast_decoder(source_root)
     patch_avx2_vpermd_helper(source_root)
     patch_avx2_vpermd_decoder(source_root)
+    patch_avx_fp_broadcast_helper(source_root)
+    patch_avx_fp_broadcast_decoder(source_root)
+    patch_avx_vptest_helper(source_root)
+    patch_avx_vptest_decoder(source_root)
+    patch_avx_map1_binary_and_moves(source_root)
+    patch_avx_vpmovmskb_decoder(source_root)
+    patch_avx_zero_state(source_root)
     upstream.generateConstants()
     upstream.compileUnicorn(["x86"])
 
     output = source_root / "dist" / "unicorn_x86.js"
     if not output.is_file() or output.stat().st_size < 100_000:
         raise RuntimeError(
-            f"Patched Unicorn.js AVX2 x86 runtime was not produced correctly: {output}"
+            f"Patched Unicorn.js AVX/AVX2 x86 runtime was not produced correctly: {output}"
         )
-    print(f"Patched Unicorn.js AVX2 x86 runtime built: {output.stat().st_size} bytes")
+    print(f"Patched Unicorn.js AVX/AVX2 x86 runtime built: {output.stat().st_size} bytes")
 
 
 if __name__ == "__main__":
