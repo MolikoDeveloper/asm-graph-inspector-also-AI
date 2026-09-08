@@ -17,6 +17,10 @@ from unicorn_avx2_extension import (
     patch_avx2_map38_lane_local_ops,
     patch_avx2_packed_integer_ops,
 )
+from unicorn_avx2_variable_shifts import (
+    patch_avx2_variable_shift_decoder,
+    patch_avx2_variable_shift_helpers,
+)
 
 
 def load_base_builder(script_dir: Path):
@@ -48,6 +52,8 @@ def main() -> None:
     base.patch_avx_vector_basics(source_root)
     patch_avx2_packed_integer_ops(source_root)
     patch_avx2_map38_lane_local_ops(source_root)
+    patch_avx2_variable_shift_helpers(source_root)
+    patch_avx2_variable_shift_decoder(source_root)
     upstream.generateConstants()
     upstream.compileUnicorn(["x86"])
 
