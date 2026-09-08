@@ -117,8 +117,8 @@ function runExactMemoryWidth(module: UnicornModule, operation: ExtendOperation, 
   const sourceBytes = sourceBytesFor(operation);
   const sourceAddress = DATA + PAGE - sourceBytes;
   const code = [
-    ...vexMap38(operation.opcode, 0x10),     // op ymm2, [rax]
-    0xc5, 0xfe, 0x7f, 0x15, 0xf3, 0x0f, 0x00, 0x00 // vmovdqu [rip+0xff3], ymm2 -> DATA
+    ...vexMap38(operation.opcode, 0x10), // op ymm2, [rax]
+    0xc5, 0xfe, 0x7f, 0x13              // vmovdqu [rbx], ymm2
   ];
   try {
     engine.mem_map(CODE, PAGE, module.PROT_ALL);
@@ -126,6 +126,7 @@ function runExactMemoryWidth(module: UnicornModule, operation: ExtendOperation, 
     engine.mem_write(CODE, code);
     engine.mem_write(sourceAddress, source.slice(0, sourceBytes));
     engine.reg_write_i64(module.X86_REG_RAX, BigInt(sourceAddress));
+    engine.reg_write_i64(module.X86_REG_RBX, BigInt(DATA));
     engine.emu_start(CODE, CODE + code.length, 0, 0);
     assert.deepEqual(
       [...engine.mem_read(DATA, VECTOR_BYTES)],
