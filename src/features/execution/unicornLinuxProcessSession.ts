@@ -49,6 +49,7 @@ const SYS_RT_SIGACTION = 13;
 const SYS_RT_SIGPROCMASK = 14;
 const SYS_IOCTL = 16;
 const SYS_PREAD64 = 17;
+const SYS_ACCESS = 21;
 const SYS_MADVISE = 28;
 const SYS_GETPID = 39;
 const SYS_UNAME = 63;
@@ -86,6 +87,7 @@ const ARCH_GET_FS = 0x1003;
 const ARCH_GET_GS = 0x1004;
 const ENOENT = 2;
 const EBADF = 9;
+const EACCES = 13;
 const EINVAL = 22;
 const ENOTTY = 25;
 const ENOSYS = 38;
@@ -772,6 +774,29 @@ export class UnicornLinuxProcessSession {
         const fd = this.openVirtual(path);
         this.setSyscallResult(fd);
         this.recordSyscall(number, number === SYS_OPEN ? 'open' : 'openat', `${path} -> ${fd}`);
+        return;
+      }
+      if (number === SYS_ACCESS) {
+        const path = this.readCString(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI));
+        const mode = Number(this.engine.reg_read_i64(this.unicorn.X86_REG_RSI));
+        if ((mode & ~0x7) !== 0) {
+          this.failSyscall(EINVAL);
+          this.recordSyscall(number, 'access', `${path}, mode=0x${mode.toString(16)} -> -${EINVAL}`);
+          return;
+        }
+        const target = this.resolveFile(path);
+        if (!target) {
+          this.failSyscall(ENOENT);
+          this.recordSyscall(number, 'access', `${path}, mode=0x${mode.toString(16)} -> -${ENOENT}`);
+          return;
+        }
+        if ((mode & 0x2) !== 0) {
+          this.failSyscall(EACCES);
+          this.recordSyscall(number, 'access', `${path}, mode=0x${mode.toString(16)} -> -${EACCES}`);
+          return;
+        }
+        this.setSyscallResult(0);
+        this.recordSyscall(number, 'access', `${path}, mode=0x${mode.toString(16)} -> 0`);
         return;
       }
       if (number === SYS_CLOSE) {
