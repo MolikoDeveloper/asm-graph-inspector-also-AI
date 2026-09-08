@@ -1,0 +1,99 @@
+name: Unicorn AVX2 validation
+
+on:
+  push:
+    branches: [feature/unicorn-avx2]
+  pull_request:
+    branches: [master]
+  workflow_dispatch:
+
+permissions:
+  contents: read
+
+concurrency:
+  group: unicorn-avx2-${{ github.ref }}
+  cancel-in-progress: true
+
+env:
+  EMSCRIPTEN_VERSION: 3.1.64
+
+jobs:
+  avx2:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      - name: Setup Bun
+        uses: oven-sh/setup-bun@v2
+        with:
+          bun-version: latest
+
+      - name: Setup Emscripten
+        uses: emscripten-core/setup-emsdk@v16
+        with:
+          version: ${{ env.EMSCRIPTEN_VERSION }}
+          actions-cache-folder: emsdk-cache
+
+      - name: Install dependencies
+        run: bun install --frozen-lockfile
+
+      - name: Build patched Unicorn x86 runtime
+        run: bun run vendor:unicorn
+
+      - name: Unicorn capability smoke
+        run: bun tests/execution/unicorn-capabilities-smoke.ts
+
+      - name: Unicorn capability scope
+        run: bun tests/execution/unicorn-capability-scope-smoke.ts
+
+      - name: AVX2 semantic basics
+        run: bun tests/execution/unicorn-avx2-basics-smoke.ts
+
+      - name: AVX2 packed integer semantics
+        run: bun tests/execution/unicorn-avx2-packed-integer-smoke.ts
+
+      - name: AVX2 lane-local integer semantics
+        run: bun tests/execution/unicorn-avx2-lane-local-smoke.ts
+
+      - name: AVX2 pack and unpack semantics
+        run: bun tests/execution/unicorn-avx2-pack-unpack-smoke.ts
+
+      - name: AVX2 0F38 lane-local semantics
+        run: bun tests/execution/unicorn-avx2-map38-smoke.ts
+
+      - name: AVX2 packed extension semantics
+        run: bun tests/execution/unicorn-avx2-extend-smoke.ts
+
+      - name: AVX2 packed absolute-value semantics
+        run: bun tests/execution/unicorn-avx2-abs-smoke.ts
+
+      - name: AVX2 variable-count shift semantics
+        run: bun tests/execution/unicorn-avx2-variable-shifts-smoke.ts
+
+      - name: AVX2 integer broadcast semantics
+        run: bun tests/execution/unicorn-avx2-broadcast-smoke.ts
+
+      - name: AVX2 VPERMD cross-lane semantics
+        run: bun tests/execution/unicorn-avx2-vpermd-smoke.ts
+
+      - name: Build Blink WASM runtime
+        run: bun run vendor:blink
+
+      - name: Toolchain tests
+        run: bun run test:toolchain
+
+      - name: Import classification tests
+        run: bun run test:import
+
+      - name: Binary analysis tests
+        run: bun run test:analysis
+
+      - name: Execution integration tests
+        run: bun run test:execution
+
+      - name: Typecheck
+        run: bun run typecheck
+
+      - name: Build
+        run: bun run build

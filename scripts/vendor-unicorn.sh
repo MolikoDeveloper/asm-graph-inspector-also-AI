@@ -41,7 +41,7 @@ if [[ "$ACTUAL_UNICORN_CORE_COMMIT" != "$UNICORN_CORE_COMMIT" ]]; then
   exit 1
 fi
 
-python3 "$ROOT/scripts/build-patched-unicorn.py" "$SOURCE_DIR"
+python3 "$ROOT/scripts/build-patched-unicorn-avx2.py" "$SOURCE_DIR"
 
 test -s "$SOURCE_DIR/dist/unicorn_x86.js"
 cp "$SOURCE_DIR/dist/unicorn_x86.js" "$DEST/unicorn_x86.js"
