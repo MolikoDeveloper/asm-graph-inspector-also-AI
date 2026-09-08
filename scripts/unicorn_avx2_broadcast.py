@@ -115,6 +115,88 @@ def patch_avx2_broadcast_decoder(source_root: Path) -> None:
         raise RuntimeError("Post-variable-shift 0F38 allow-list anchor no longer matches")
     text = text.replace(allow_anchor, allow_replacement, 1)
 
+    lookup_anchor = """            if (vex_map38 && (b == 0x45 || b == 0x46 || b == 0x47)) {
+                /* VEX.W is reflected in dflag after prefix post-processing.
+                 * 0x45/0x47 select dword vs qword; 0x46 W=1 is reserved. */
+                switch (b) {
+                case 0x45:
+                    sse_fn_epp = s->dflag == MO_64
+                        ? gen_helper_vpsrlvq_xmm : gen_helper_vpsrlvd_xmm;
+                    break;
+                case 0x46:
+                    if (s->dflag == MO_64) {
+                        goto illegal_op;
+                    }
+                    sse_fn_epp = gen_helper_vpsravd_xmm;
+                    break;
+                case 0x47:
+                    sse_fn_epp = s->dflag == MO_64
+                        ? gen_helper_vpsllvq_xmm : gen_helper_vpsllvd_xmm;
+                    break;
+                default:
+                    goto illegal_op;
+                }
+            } else {
+                sse_fn_epp = sse_op_table6[b].op[b1];
+                if (!sse_fn_epp) {
+                    goto unknown_op;
+                }
+                if (!(s->cpuid_ext_features & sse_op_table6[b].ext_mask))
+                    goto illegal_op;
+            }
+
+            if (vex_map38) {
+"""
+    lookup_replacement = """            if (vex_map38 &&
+                (b == 0x45 || b == 0x46 || b == 0x47 ||
+                 b == 0x58 || b == 0x59 || b == 0x78 || b == 0x79)) {
+                /* Route all AVX2-only helpers before the legacy SSE4 table,
+                 * which has no entries for these opcodes in pinned QEMU 5. */
+                switch (b) {
+                case 0x45:
+                    sse_fn_epp = s->dflag == MO_64
+                        ? gen_helper_vpsrlvq_xmm : gen_helper_vpsrlvd_xmm;
+                    break;
+                case 0x46:
+                    if (s->dflag == MO_64) {
+                        goto illegal_op;
+                    }
+                    sse_fn_epp = gen_helper_vpsravd_xmm;
+                    break;
+                case 0x47:
+                    sse_fn_epp = s->dflag == MO_64
+                        ? gen_helper_vpsllvq_xmm : gen_helper_vpsllvd_xmm;
+                    break;
+                case 0x58:
+                    sse_fn_epp = gen_helper_vpbroadcastd_xmm;
+                    break;
+                case 0x59:
+                    sse_fn_epp = gen_helper_vpbroadcastq_xmm;
+                    break;
+                case 0x78:
+                    sse_fn_epp = gen_helper_vpbroadcastb_xmm;
+                    break;
+                case 0x79:
+                    sse_fn_epp = gen_helper_vpbroadcastw_xmm;
+                    break;
+                default:
+                    goto illegal_op;
+                }
+            } else {
+                sse_fn_epp = sse_op_table6[b].op[b1];
+                if (!sse_fn_epp) {
+                    goto unknown_op;
+                }
+                if (!(s->cpuid_ext_features & sse_op_table6[b].ext_mask))
+                    goto illegal_op;
+            }
+
+            if (vex_map38) {
+"""
+    if text.count(lookup_anchor) != 1:
+        raise RuntimeError("Post-variable-shift helper routing no longer matches before broadcast extension")
+    text = text.replace(lookup_anchor, lookup_replacement, 1)
+
     lowering_anchor = """            if (vex_map38) {
                 op1_offset = offsetof(CPUX86State, xmm_regs[reg]);
 
