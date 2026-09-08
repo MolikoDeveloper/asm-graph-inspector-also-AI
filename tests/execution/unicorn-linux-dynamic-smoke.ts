@@ -208,7 +208,22 @@ const temp = mkdtempSync(join(tmpdir(), 'asm-graph-unicorn-linux-'));
 try {
   const source = join(temp, 'hello.c');
   const executable = join(temp, 'hello');
-  writeFileSync(source, '#include <stdio.h>\nint main(void) { puts("hello from unicorn dynamic glibc"); return 0; }\n');
+  writeFileSync(source, [
+    '#include <stdio.h>',
+    '#include <sys/uio.h>',
+    'int main(void) {',
+    '  static const char left[] = "hello from ";',
+    '  static const char right[] = "unicorn writev\\n";',
+    '  struct iovec iov[2] = {',
+    '    { (void *)left, sizeof(left) - 1 },',
+    '    { (void *)right, sizeof(right) - 1 }',
+    '  };',
+    '  puts("hello from unicorn dynamic glibc");',
+    '  const ssize_t written = writev(1, iov, 2);',
+    '  return written == (ssize_t)(sizeof(left) + sizeof(right) - 2) ? 0 : 2;',
+    '}',
+    ''
+  ].join('\n'));
   execFileSync('cc', ['-O0', '-fno-pie', '-no-pie', source, '-o', executable], { stdio: 'inherit' });
 
   const executableBytes = exactArrayBuffer(readFileSync(executable));
@@ -279,8 +294,13 @@ try {
     assert.equal(snapshot.status, 'exited', failureContext(snapshot, fault, diagnosticTargets, internalUnicornStack));
     assert.equal(snapshot.exitCode, 0);
     assert.match(snapshot.stdout, /hello from unicorn dynamic glibc/);
+    assert.match(snapshot.stdout, /hello from unicorn writev/);
+    assert.ok(
+      snapshot.events.some((event) => event.kind === 'syscall' && event.number === 20 && event.name === 'writev'),
+      'dynamic glibc fixture must exercise the bounded Linux user writev syscall contract'
+    );
     assert.ok(snapshot.events.some((event) => event.kind === 'trace-gap'), 'dynamic startup must cross loader/dependency execution boundaries');
-    console.log(`Unicorn Linux dynamic smoke: PASS (${snapshot.instructionCount.toLocaleString()} instructions, loader + libc from explicit runtime closure)`);
+    console.log(`Unicorn Linux dynamic smoke: PASS (${snapshot.instructionCount.toLocaleString()} instructions, loader + libc + writev through explicit runtime closure)`);
   } finally {
     session.dispose();
   }
