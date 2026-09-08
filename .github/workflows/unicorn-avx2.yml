@@ -83,6 +83,9 @@ jobs:
       - name: AVX VPTEST semantics
         run: bun tests/execution/unicorn-avx-vptest-smoke.ts
 
+      - name: AVX VPMOVMSKB semantics
+        run: bun tests/execution/unicorn-avx-vpmovmskb-smoke.ts
+
       - name: AVX2 VPERMD cross-lane semantics
         run: bun tests/execution/unicorn-avx2-vpermd-smoke.ts
 
