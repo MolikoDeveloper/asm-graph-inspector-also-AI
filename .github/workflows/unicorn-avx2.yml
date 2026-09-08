@@ -60,5 +60,8 @@ jobs:
       - name: AVX2 packed extension semantics
         run: bun tests/execution/unicorn-avx2-extend-smoke.ts
 
+      - name: AVX2 packed absolute-value semantics
+        run: bun tests/execution/unicorn-avx2-abs-smoke.ts
+
       - name: Typecheck
         run: bun run typecheck
