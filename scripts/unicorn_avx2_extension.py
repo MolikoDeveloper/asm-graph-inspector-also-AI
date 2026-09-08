@@ -21,6 +21,19 @@ from pathlib import Path
 # invokes the XMM helper once per 128-bit lane, and applies VEX zero-upper rules.
 # These opcodes can therefore safely reuse that exact lowering.
 PACKED_BINARY_OPCODES = (
+    # Interleave and pack; AVX2 defines these independently per 128-bit lane.
+    0x60,  # vpunpcklbw
+    0x61,  # vpunpcklwd
+    0x62,  # vpunpckldq
+    0x63,  # vpacksswb
+    0x67,  # vpackuswb
+    0x68,  # vpunpckhbw
+    0x69,  # vpunpckhwd
+    0x6A,  # vpunpckhdq
+    0x6B,  # vpackssdw
+    0x6C,  # vpunpcklqdq
+    0x6D,  # vpunpckhqdq
+
     # Compare.
     0x64,  # vpcmpgtb
     0x65,  # vpcmpgtw
@@ -93,9 +106,6 @@ def patch_avx2_packed_integer_ops(source_root: Path) -> None:
             "Base AVX binary classification no longer matches the audited patch"
         )
 
-    # vex_xor is a private identifier introduced only by the base patch. Once
-    # the classification is broadened, the existing operand preparation and
-    # two-lane execution path is exactly the reusable packed-binary lowering.
     occurrences = text.count("vex_xor")
     if occurrences < 5:
         raise RuntimeError(
@@ -105,8 +115,6 @@ def patch_avx2_packed_integer_ops(source_root: Path) -> None:
     text = text.replace(old_classification, new_classification, 1)
     text = text.replace("vex_xor", "vex_binary")
 
-    # Tighten comments so future changes do not mistake this subset for general
-    # AVX2 support.
     text = text.replace(
         "true three-operand XOR plus\n     * VMOVDQA/VMOVDQU are the only vector operations allowed to use VEX.L=1.",
         "audited three-operand lane-local binary ops plus\n     * VMOVDQA/VMOVDQU are the only vector operations allowed to use VEX.L=1.",
