@@ -9,3 +9,4 @@ public/vendor/toolchain/*.elf
 public/vendor/unicorn/unicorn_x86.js
 public/vendor/unicorn/LICENSE.unicorn-js.txt
 projects/
+__pycache__/
