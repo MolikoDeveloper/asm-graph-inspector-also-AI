@@ -33,6 +33,13 @@ MAP38_BINARY_OPCODES = (
     0x38, 0x39, 0x3A, 0x3B, 0x3C, 0x3D, 0x3E, 0x3F, 0x40,
 )
 
+# Unary full-width source operations. VEX.vvvv is reserved and must remain 1111b.
+MAP38_UNARY_OPCODES = (
+    0x1C,  # vpabsb
+    0x1D,  # vpabsw
+    0x1E,  # vpabsd
+)
+
 # VPMOVSX*/VPMOVZX*. One XMM helper produces one 128-bit destination. For
 # VEX.256 the second call consumes the immediately following narrow source
 # chunk and writes the high 128-bit destination lane.
@@ -122,7 +129,7 @@ def patch_avx2_map38_lane_local_ops(source_root: Path) -> None:
         raise RuntimeError("AVX VEX.L guard no longer matches before 0F38 extension")
     text = text.replace(guard_before, guard_after, 1)
 
-    allowed = MAP38_BINARY_OPCODES + MAP38_EXTEND_OPCODES
+    allowed = MAP38_BINARY_OPCODES + MAP38_UNARY_OPCODES + MAP38_EXTEND_OPCODES
     allow_cases = "\n".join(f"                case 0x{opcode:02x}:" for opcode in allowed)
     map_entry_before = """        case 0x138:
         case 0x038:
@@ -147,6 +154,7 @@ def patch_avx2_map38_lane_local_ops(source_root: Path) -> None:
         raise RuntimeError("Pinned 0F38 entry block no longer matches the audited source")
     text = text.replace(map_entry_before, map_entry_after, 1)
 
+    unary_condition = " || ".join(f"b == 0x{opcode:02x}" for opcode in MAP38_UNARY_OPCODES)
     extend_cases = "\n".join(f"                case 0x{opcode:02x}:" for opcode in MAP38_EXTEND_OPCODES)
     helper_anchor_before = """            if (!(s->cpuid_ext_features & sse_op_table6[b].ext_mask))
                 goto illegal_op;
@@ -158,6 +166,46 @@ def patch_avx2_map38_lane_local_ops(source_root: Path) -> None:
 
             if (vex_map38) {{
                 op1_offset = offsetof(CPUX86State, xmm_regs[reg]);
+
+                if ({unary_condition}) {{
+                    /* Unary VEX forms reserve vvvv. Snapshot register aliases so
+                     * helper implementation details cannot make in-place writes
+                     * observable, then apply the existing XMM helper per lane. */
+                    if (s->vex_v != 0) {{
+                        goto illegal_op;
+                    }}
+                    if (mod == 3) {{
+                        rm = (modrm & 7) | REX_B(s);
+                        op2_offset = offsetof(CPUX86State, xmm_regs[rm]);
+                        if (rm == reg) {{
+                            if (s->vex_l) {{
+                                gen_op_movy(s, offsetof(CPUX86State, xmm_t0), op2_offset);
+                            }} else {{
+                                gen_op_movo(s, offsetof(CPUX86State, xmm_t0), op2_offset);
+                            }}
+                            op2_offset = offsetof(CPUX86State, xmm_t0);
+                        }}
+                    }} else {{
+                        gen_lea_modrm(env, s, modrm);
+                        op2_offset = offsetof(CPUX86State, xmm_t0);
+                        if (s->vex_l) {{
+                            gen_ldy_env_A0(s, op2_offset);
+                        }} else {{
+                            gen_ldo_env_A0(s, op2_offset);
+                        }}
+                    }}
+
+                    tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset);
+                    tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset);
+                    sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
+                    if (s->vex_l) {{
+                        tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset + 16);
+                        tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset + 16);
+                        sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
+                    }}
+                    gen_op_zero_vex_upper(s, op1_offset, s->vex_l);
+                    break;
+                }}
 
                 switch (b) {{
 {extend_cases}
@@ -189,8 +237,6 @@ def patch_avx2_map38_lane_local_ops(source_root: Path) -> None:
                             rm = (modrm & 7) | REX_B(s);
                             op2_offset = offsetof(CPUX86State, xmm_regs[rm]);
                             if (rm == reg) {{
-                                /* Snapshot before destination widening overwrites
-                                 * the narrow source in the same register. */
                                 gen_op_movo(s, offsetof(CPUX86State, xmm_t0), op2_offset);
                                 op2_offset = offsetof(CPUX86State, xmm_t0);
                             }}
