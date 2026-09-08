@@ -1,5 +1,103 @@
 # Pending migration work
 
+## Linux System experimental branch
+
+This branch starts from the completed bounded `linux-user` checkpoint on `master`. Its purpose is to prove a separate **full-system x86-64** execution backend with a real Linux kernel. It must not grow `UnicornLinuxProcessSession` into a kernel substitute and must not regress the fast `unicorn-machine` / `linux-user` paths.
+
+### LS0 — backend and provenance gate
+
+- [ ] Select and pin the exact QEMU/WASM source revision and any required browser-host patches; record upstream commit IDs, licenses and patch provenance.
+- [ ] Reproduce the full-system runtime build from repository scripts/CI instead of checking in an unexplained prebuilt engine.
+- [ ] Keep the first bring-up single-vCPU and single-threaded where possible; measure a threaded/cross-origin-isolated build separately rather than making SharedArrayBuffer a hidden requirement.
+- [ ] Define a typed backend boundary independent from Unicorn so machine lifecycle, console, framebuffer, storage and input do not leak QEMU-specific objects into React.
+- [ ] Add an explicit capability report for full-system x86-64 rather than inferring support from configure flags.
+
+### LS1 — CPU and machine bring-up
+
+- [ ] Boot a minimal x86-64 Linux kernel plus deterministic initramfs/BusyBox entirely in browser/WASM.
+- [ ] Establish RAM, reset/boot path, timers/interrupts and the minimum virtual devices required by the chosen machine profile.
+- [ ] Get a guest serial or VirtIO console from kernel boot through an interactive shell.
+- [ ] Add bounded boot/run budgets for wall time, guest RAM, browser memory and generated translation state; failures must remain explicit.
+- [ ] Execute an SSE2 baseline smoke in the guest.
+- [ ] Execute an AVX smoke in the guest.
+- [ ] Execute an AVX2 smoke beginning with `vpxor ymm0, ymm0, ymm0`, then memory/integer/shuffle cases required by real programs.
+- [ ] Validate guest `CPUID`, `XGETBV`, XCR0/XSAVE state and actual instruction execution together before claiming AVX2 support.
+- [ ] Keep AVX2 unavailable in UI/capability metadata until the guest execution tests pass.
+
+### LS2 — real guest TTY and input
+
+- [ ] Bridge the guest console to the existing browser terminal surface without host syscall passthrough.
+- [ ] Verify `/dev/tty`, `isatty`, `termios` and relevant `ioctl` behavior is supplied by the guest kernel rather than TypeScript syscall emulation.
+- [ ] Route keyboard input into the virtual console/device.
+- [ ] Verify canonical/raw terminal modes and control characters including Ctrl-C.
+- [ ] Preserve terminal output as observable execution events without changing guest semantics.
+
+### LS3 — browser-backed storage
+
+- [ ] Keep project/machine metadata in IndexedDB; move large mutable machine/workspace data to OPFS.
+- [ ] Use an immutable/cacheable base rootfs for the initial implementation.
+- [ ] Persist only the project-owned workspace (`/workspace`) initially; do not rewrite a complete root image for ordinary project edits.
+- [ ] Design a block/file bridge that preserves ordering and flush semantics required by the guest filesystem.
+- [ ] Add reload persistence tests: create/modify/delete guest workspace files, reload the page, boot again and verify exact contents.
+- [ ] Handle browser quota exhaustion and partial-write failures explicitly.
+- [ ] Add an optional writable system overlay only after workspace persistence is proven.
+
+### LS4 — project machine model
+
+- [ ] Design `InspectorProject` schema v2 with a versioned `machineProfile` rather than embedding runtime objects in project state.
+- [ ] Represent architecture (`x86_64`) independently from environment (`bare-metal`, `linux-user`, `linux-system`).
+- [ ] Record backend/kernel/rootfs identifiers needed to reproduce a machine without persisting opaque execution state as authoritative project data.
+- [ ] Provide deterministic migration from schemaVersion 1 projects with no machine profile.
+- [ ] Keep old projects defaulting to the current fast behavior unless the user explicitly selects Linux System.
+- [ ] Define project export/import rules for machine metadata and workspace content without automatically bundling large shared base images.
+
+### LS5 — framebuffer and virtual display
+
+- [ ] Add the simplest auditable guest framebuffer/display device supported by the selected backend.
+- [ ] Present framebuffer output in a dedicated Canvas-based `Linux Display` surface/window, separate from the debugger graph.
+- [ ] Bridge keyboard and pointer input through guest virtual input devices.
+- [ ] Measure framebuffer copy/repaint cost and avoid rendering unchanged regions where the backend exposes dirty rectangles/pages.
+- [ ] Keep OpenGL, VirGL, 3D acceleration and host GPU passthrough out of the first display milestone.
+
+### LS6 — X11 guest stack
+
+- [ ] Boot a Linux image containing a minimal X11 stack only after framebuffer/input are stable.
+- [ ] Run the X server inside the guest; do not reimplement the X11 protocol in TypeScript.
+- [ ] Add a minimal window-manager/application smoke that opens a real guest window, receives keyboard/mouse input and repaints correctly.
+- [ ] Verify an assembled/linked project program can interact with guest X11 through the normal Linux ABI/libraries.
+- [ ] Keep the graphical test surface isolated so closing/resetting it cannot corrupt project storage.
+
+### LS7 — performance, isolation and deployment
+
+- [ ] Measure cold boot latency, time to shell, steady-state translated x86 throughput, guest RAM footprint and browser/WASM memory growth.
+- [ ] Benchmark AVX2-heavy loops separately from kernel/TTY workloads so CPU translation cost is visible.
+- [ ] Measure OPFS throughput and sync/flush overhead with realistic project workloads.
+- [ ] Compare single-thread and threaded WASM builds before choosing the default.
+- [ ] Validate the cross-origin-isolation strategy required for any SharedArrayBuffer build under the actual GitHub Pages deployment model.
+- [ ] Keep strict memory/CPU/storage ceilings and explicit errors; never increase limits solely to mask a backend bug.
+- [ ] Prohibit host filesystem/process/syscall passthrough. Any network support must be an explicit virtual-device/browser policy layer.
+- [ ] Add deterministic reset/dispose tests to prove a VM cannot retain stale device/memory state across project runs.
+
+### Linux System acceptance gates
+
+- [ ] A real x86-64 Linux kernel reaches userspace in the browser.
+- [ ] A real guest TTY reaches an interactive shell and handles input/signals through kernel device semantics.
+- [ ] AVX2 is observed executing correctly inside the guest, with coherent CPUID/XCR0 exposure.
+- [ ] `/workspace` survives browser reload through OPFS with byte-exact persistence.
+- [ ] The VM cannot access the host filesystem or host process/syscall surface.
+- [ ] `unicorn-machine` and `linux-user` regression suites remain green and keep their fast startup path.
+- [ ] Framebuffer performance is measured and acceptable before X11 is introduced.
+- [ ] X11 is accepted only after a real guest application can open, repaint and interact with a window.
+
+### Explicit non-goals for initial Linux System bring-up
+
+- [ ] Do **not** convert the TypeScript Linux User syscall shim into full-system emulation.
+- [ ] Do **not** claim AVX2 from a configure option or CPUID bit alone.
+- [ ] Do **not** add OpenGL/VirGL/3D before the basic framebuffer/X11 path is proven.
+- [ ] Do **not** make the base rootfs globally writable before an overlay/persistence design is validated.
+- [ ] Do **not** pass guest syscalls, paths or file descriptors directly to the browser host OS.
+- [ ] Do **not** merge this branch to `master` until the CPU/kernel/TTY/AVX2/storage acceptance gates are demonstrated by automated tests.
+
 ## Current execution architecture
 
 - [x] `asm-source-x86-64`: fast source-semantic NASM-style execution for editor/debugger workflows.
@@ -7,7 +105,7 @@
 - [x] `linux-user`: bounded, kernel-less x86-64 Linux userspace on Unicorn/WASM with explicit `PT_INTERP` / `DT_NEEDED` runtime materialization and a narrow TypeScript syscall contract.
 - [x] Close the observed Linux User stdio gap with x86-64 `SYS_writev(20)`, bounded iovec handling, stdout/stderr byte-preserving aggregation and fail-closed writes to the read-only runtime VFS.
 - [x] Keep Linux User single-process/single-thread and fail closed when a futex wait would really block; never fake synchronization success.
-- [ ] `linux-system`: full-system x86-64 machine + real Linux kernel, real guest TTY/devices/filesystem and optional graphical display. This work belongs on a dedicated branch and must not expand the Linux User syscall shim into a second kernel.
+- [ ] `linux-system`: full-system x86-64 machine + real Linux kernel, real guest TTY/devices/filesystem and optional graphical display. This branch owns that experiment and must not expand the Linux User syscall shim into a second kernel.
 
 ## Completed in this redesign
 
@@ -88,7 +186,8 @@
 
 ## Linux System handoff
 
-- [ ] Prototype a full-system x86-64 backend in a dedicated branch without changing the stable Linux User contract on `master`.
+- [x] Create the dedicated `feature/linux-system` branch from the completed Linux User checkpoint.
+- [ ] Prototype the full-system x86-64 backend without changing the stable Linux User contract on `master`.
 - [ ] Pin and audit the full-system emulator/toolchain before vendoring any new runtime assets.
 - [ ] Gate the architecture on a real Linux kernel boot, guest TTY, AVX2 execution and browser-persistent workspace storage before adding graphical work.
 - [ ] Keep the root system image immutable/cached where practical; persist project-owned changes separately through browser storage.
