@@ -1,5 +1,5 @@
 #!/usr/bin/env python3
-"""Build the pinned Unicorn.js x86 runtime with the local TCI/WASM lifetime fix.
+"""Build the pinned Unicorn.js x86 runtime with local WASM correctness fixes.
 
 The upstream Unicorn.js adapter patch widens every logical helper argument to an
 (i32 lo, i32 hi) pair for the TCI/WASM ABI. For originally narrow arguments it
@@ -7,9 +7,17 @@ allocates a temporary TCGv_i64, but the wasm32 path never frees that temporary.
 Long TranslationBlocks with code hooks therefore exhaust TCG_MAX_TEMPS during
 translation and eventually write past the TCG temporary array.
 
-This driver deliberately patches the already-upstream-patched tcg.c rather than
-forking generated JavaScript/WASM. That keeps the fix at the layer where the
-lifetime bug exists and makes future per-architecture builds use the same repair.
+The Emscripten-backed RAM allocator can also recycle a host allocation after
+uc_mem_unmap without clearing its bytes. Native anonymous mappings commonly get
+zero-filled pages from the host OS, but the Unicorn API cannot rely on that when
+compiled to wasm32. The Linux userspace session requires Linux MAP_ANONYMOUS and
+ELF BSS zero-fill semantics, so every ordinary uc_mem_map RAM block is cleared at
+creation. Preallocated uc_mem_map_ptr memory is deliberately left untouched.
+
+This driver deliberately patches the already-upstream-patched sources rather
+than forking generated JavaScript/WASM. That keeps both repairs at the layers
+where their invariants belong and makes future per-architecture builds use the
+same fixes.
 """
 
 from __future__ import annotations
@@ -102,6 +110,39 @@ def patch_tcg_argument_lifetime(source_root: Path) -> None:
     tcg_path.write_text(text)
 
 
+def patch_ram_zero_fill(source_root: Path) -> None:
+    memory_path = source_root / "unicorn" / "qemu" / "softmmu" / "memory.c"
+    text = memory_path.read_text()
+
+    mapping_before = """    memory_region_init_ram(uc, ram, size, perms);
+    if (ram->addr == -1 || !ram->ram_block) {
+        // out of memory
+        g_free(ram);
+        return NULL;
+    }
+
+    memory_region_add_subregion_overlap(uc->system_memory, begin, ram, uc->snapshot_level);
+"""
+    mapping_after = """    memory_region_init_ram(uc, ram, size, perms);
+    if (ram->addr == -1 || !ram->ram_block) {
+        // out of memory
+        g_free(ram);
+        return NULL;
+    }
+
+    /* wasm32 malloc may recycle bytes from a previously unmapped RAMBlock.
+     * uc_mem_map represents newly-created ordinary RAM, so make its initial
+     * contents deterministic and preserve anonymous/BSS zero-page semantics. */
+    memset(ramblock_ptr(ram->ram_block, 0), 0, size);
+
+    memory_region_add_subregion_overlap(uc->system_memory, begin, ram, uc->snapshot_level);
+"""
+
+    if text.count(mapping_before) != 1:
+        raise RuntimeError("Pinned Unicorn memory_map block no longer matches the audited 2.1.4 source")
+    memory_path.write_text(text.replace(mapping_before, mapping_after, 1))
+
+
 def main() -> None:
     if len(sys.argv) != 2:
         raise SystemExit("usage: build-patched-unicorn.py <unicorn.js-source-root>")
@@ -114,12 +155,13 @@ def main() -> None:
     upstream = load_upstream_build(source_root)
     upstream.patchUnicorn()
     patch_tcg_argument_lifetime(source_root)
+    patch_ram_zero_fill(source_root)
     upstream.generateConstants()
     upstream.compileUnicorn(["x86"])
 
     output = source_root / "dist" / "unicorn_x86.js"
     if not output.is_file() or output.stat().st_size < 100_000:
-        raise RuntimeError(f"Patched Unicorn x86 runtime was not produced correctly: {output}")
+        raise RuntimeError(f"Patched Unicorn.js x86 runtime was not produced correctly: {output}")
     print(f"Patched Unicorn.js x86 runtime built: {output.stat().st_size} bytes")
 
 
