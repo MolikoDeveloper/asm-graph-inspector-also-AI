@@ -237,16 +237,22 @@ function runOperation(
   }
 }
 
-function assertCrossLaneStillFailsClosed(module: UnicornModule): void {
+function assertUnauditedAvx2StillFailsClosed(module: UnicornModule): void {
   const engine = new module.Unicorn(module.ARCH_X86, module.MODE_64);
-  const unsupported = [0xc4, 0xe2, 0x75, 0x36, 0xc2]; // vpermd ymm0, ymm1, ymm2
+  // VPMASKMOVD remains outside this audited subset. Use a valid memory form so
+  // this assertion proves the decoder still rejects an unaudited AVX2 family,
+  // rather than merely rejecting an architecturally invalid ModRM form.
+  const unsupported = [0xc4, 0xe2, 0x75, 0x8c, 0x00]; // vpmaskmovd ymm0, ymm1, [rax]
   try {
     engine.mem_map(CODE, PAGE, module.PROT_ALL);
+    engine.mem_map(DATA, PAGE, module.PROT_READ | module.PROT_WRITE);
     engine.mem_write(CODE, unsupported);
+    engine.mem_write(DATA, new Array(VECTOR_BYTES).fill(0));
+    engine.reg_write_i64(module.X86_REG_RAX, BigInt(DATA));
     assert.throws(
       () => engine.emu_start(CODE, CODE + unsupported.length, 0, 1),
       /Invalid instruction|UC_ERR_INSN_INVALID|invalid/i,
-      'cross-lane VPERMD must remain fail-closed until dedicated lowering exists'
+      'VPMASKMOVD must remain fail-closed until its AVX2 memory semantics are audited'
     );
   } finally {
     engine.close();
@@ -271,10 +277,10 @@ try {
   for (const operation of OPERATIONS) {
     runOperation(module, operation, sourceA, sourceB);
   }
-  assertCrossLaneStillFailsClosed(module);
+  assertUnauditedAvx2StillFailsClosed(module);
 
   console.log(
-    `Unicorn AVX2 lane-local smoke: PASS (${OPERATIONS.length} compare/saturating/minmax/multiply/average/SAD ops + fail-closed VPERMD)`
+    `Unicorn AVX2 lane-local smoke: PASS (${OPERATIONS.length} compare/saturating/minmax/multiply/average/SAD ops + fail-closed VPMASKMOVD)`
   );
 } finally {
   rmSync(temp, { recursive: true, force: true });
