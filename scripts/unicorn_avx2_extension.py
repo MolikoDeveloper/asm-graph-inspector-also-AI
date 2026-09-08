@@ -139,6 +139,11 @@ def patch_avx2_map38_lane_local_ops(source_root: Path) -> None:
     map_entry_after = f"""        case 0x138:
         case 0x038:
             b = modrm;
+            /* SHLX is scalar BMI2 but uses the same 66/VEX.0F38 map as the
+             * AVX2 subset below. Let the upstream BMI2 decoder handle F7. */
+            if (vex_map38 && b == 0xf7) {{
+                vex_map38 = 0;
+            }}
             if (vex_map38) {{
                 /* Fail closed before helper lookup or BMI/CRC side paths. */
                 switch (b) {{

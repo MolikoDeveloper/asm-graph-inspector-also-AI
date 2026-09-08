@@ -96,6 +96,31 @@ function assertUnimplementedAvx2StillFailsClosed(module: UnicornModule): void {
   }
 }
 
+function runBmi2Shlx(module: UnicornModule): void {
+  const engine = new module.Unicorn(module.ARCH_X86, module.MODE_64);
+  const code = [
+    0xc4, 0xe2, 0x91, 0xf7, 0xd8, // shlx rbx, rax, r13
+    0xc4, 0xe2, 0xb9, 0xf7, 0x02, // shlx rax, qword ptr [rdx], r8
+    0xc4, 0xe2, 0x41, 0xf7, 0xc0  // shlx eax, eax, edi
+  ];
+  try {
+    engine.mem_map(CODE, PAGE, module.PROT_ALL);
+    engine.mem_map(DATA, PAGE, module.PROT_READ | module.PROT_WRITE);
+    engine.mem_write(CODE, code);
+    engine.mem_write(DATA, new Uint8Array([3, 0, 0, 0, 0, 0, 0, 0]));
+    engine.reg_write_i64(module.X86_REG_RAX, 3n);
+    engine.reg_write_i64(module.X86_REG_R13, 4n);
+    engine.reg_write_i64(module.X86_REG_RDX, BigInt(DATA));
+    engine.reg_write_i64(module.X86_REG_R8, 5n);
+    engine.reg_write_i64(module.X86_REG_RDI, 33n);
+    engine.emu_start(CODE, CODE + code.length, 0, 0);
+    assert.equal(engine.reg_read_i64(module.X86_REG_RBX), 48n, 'SHLX r64 must shift its register source by the VEX count register');
+    assert.equal(engine.reg_read_i64(module.X86_REG_RAX), 192n, 'SHLX r32 must accept a memory-fed source, mask the count to 5 bits and zero-extend its result');
+  } finally {
+    engine.close();
+  }
+}
+
 try {
   const runtime = join(temp, 'unicorn_x86.cjs');
   writeFileSync(runtime, runtimeBytes);
@@ -104,7 +129,8 @@ try {
 
   runSemanticClosure(module);
   assertUnimplementedAvx2StillFailsClosed(module);
-  console.log('Unicorn AVX2 basics smoke: PASS (YMM load/store + 3-operand VPXOR + aliasing + memory source + VEX.128 zero-upper + fail-closed unaudited remainder)');
+  runBmi2Shlx(module);
+  console.log('Unicorn AVX2 basics smoke: PASS (YMM load/store + 3-operand VPXOR + BMI2 SHLX register/memory + aliasing + VEX.128 zero-upper + fail-closed unaudited remainder)');
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }
