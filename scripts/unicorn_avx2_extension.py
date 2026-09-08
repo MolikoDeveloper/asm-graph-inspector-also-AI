@@ -1,14 +1,14 @@
 #!/usr/bin/env python3
 """Incremental AVX2 extensions for the pinned Unicorn/QEMU translator.
 
-This module intentionally runs *after* patch_avx_vector_basics(). It only widens
-an audited set of lane-local packed integer operations whose existing XMM helpers
-have identical per-128-bit semantics when applied independently to the low/high
-halves of a YMM register.
+The base patch establishes truthful VEX three-operand state handling plus YMM
+load/store. This module widens only explicitly audited instruction families.
+Every enabled 256-bit operation is either defined independently per 128-bit lane
+or receives dedicated lowering here.
 
-Do not turn this into a blanket VEX.L enable. Cross-lane shuffles, vector-count
-shifts, broadcasts, gathers and other AVX2-specific semantics require dedicated
-lowering and stay fail-closed until implemented and tested.
+Do not turn this into a blanket VEX.L enable. Cross-lane permutations,
+variable-count shifts, broadcasts, gathers and other AVX2-specific semantics
+stay fail-closed until implemented and tested.
 """
 
 from __future__ import annotations
@@ -19,70 +19,54 @@ from pathlib import Path
 # 66 0F opcodes with ordinary three-operand packed integer semantics. The base
 # AVX patch already snapshots source2, copies VEX.vvvv source1 into destination,
 # invokes the XMM helper once per 128-bit lane, and applies VEX zero-upper rules.
-# These opcodes can therefore safely reuse that exact lowering.
 PACKED_BINARY_OPCODES = (
     # Interleave and pack; AVX2 defines these independently per 128-bit lane.
-    0x60,  # vpunpcklbw
-    0x61,  # vpunpcklwd
-    0x62,  # vpunpckldq
-    0x63,  # vpacksswb
-    0x67,  # vpackuswb
-    0x68,  # vpunpckhbw
-    0x69,  # vpunpckhwd
-    0x6A,  # vpunpckhdq
-    0x6B,  # vpackssdw
-    0x6C,  # vpunpcklqdq
-    0x6D,  # vpunpckhqdq
-
+    0x60, 0x61, 0x62, 0x63, 0x67, 0x68, 0x69, 0x6A, 0x6B, 0x6C, 0x6D,
     # Compare.
-    0x64,  # vpcmpgtb
-    0x65,  # vpcmpgtw
-    0x66,  # vpcmpgtd
-    0x74,  # vpcmpeqb
-    0x75,  # vpcmpeqw
-    0x76,  # vpcmpeqd
-
+    0x64, 0x65, 0x66, 0x74, 0x75, 0x76,
     # Add/subtract and logical core.
-    0xD4,  # vpaddq
-    0xDB,  # vpand
-    0xDF,  # vpandn
-    0xEB,  # vpor
-    0xEF,  # vpxor
-    0xF8,  # vpsubb
-    0xF9,  # vpsubw
-    0xFA,  # vpsubd
-    0xFB,  # vpsubq
-    0xFC,  # vpaddb
-    0xFD,  # vpaddw
-    0xFE,  # vpaddd
-
-    # Multiply / horizontal-within-element-pairs / absolute-difference sum.
-    0xD5,  # vpmullw
-    0xE4,  # vpmulhuw
-    0xE5,  # vpmulhw
-    0xF4,  # vpmuludq
-    0xF5,  # vpmaddwd
-    0xF6,  # vpsadbw
-
+    0xD4, 0xDB, 0xDF, 0xEB, 0xEF, 0xF8, 0xF9, 0xFA, 0xFB, 0xFC, 0xFD, 0xFE,
+    # Multiply / pairwise multiply-add / absolute-difference sum.
+    0xD5, 0xE4, 0xE5, 0xF4, 0xF5, 0xF6,
     # Unsigned saturating arithmetic and min/max.
-    0xD8,  # vpsubusb
-    0xD9,  # vpsubusw
-    0xDA,  # vpminub
-    0xDC,  # vpaddusb
-    0xDD,  # vpaddusw
-    0xDE,  # vpmaxub
-
+    0xD8, 0xD9, 0xDA, 0xDC, 0xDD, 0xDE,
     # Rounded averages.
-    0xE0,  # vpavgb
-    0xE3,  # vpavgw
-
+    0xE0, 0xE3,
     # Signed saturating arithmetic and min/max.
-    0xE8,  # vpsubsb
-    0xE9,  # vpsubsw
-    0xEA,  # vpminsw
-    0xEC,  # vpaddsb
-    0xED,  # vpaddsw
-    0xEE,  # vpmaxsw
+    0xE8, 0xE9, 0xEA, 0xEC, 0xED, 0xEE,
+)
+
+# 66 0F38 operations backed by existing SSSE3/SSE4.x XMM helpers. These are
+# also lane-local for AVX2. The old translator's 0F38 path is destructive and
+# 128-bit-only, so this family needs a separate VEX-aware adapter below.
+MAP38_BINARY_OPCODES = (
+    # SSSE3 horizontal/shuffle/sign/multiply family.
+    0x00,  # vpshufb
+    0x01,  # vphaddw
+    0x02,  # vphaddd
+    0x03,  # vphaddsw
+    0x04,  # vpmaddubsw
+    0x05,  # vphsubw
+    0x06,  # vphsubd
+    0x07,  # vphsubsw
+    0x08,  # vpsignb
+    0x09,  # vpsignw
+    0x0A,  # vpsignd
+    0x0B,  # vpmulhrsw
+    # SSE4.x operations extended to 256 bits by AVX2.
+    0x28,  # vpmuldq
+    0x29,  # vpcmpeqq
+    0x2B,  # vpackusdw
+    0x37,  # vpcmpgtq
+    0x38,  # vpminsb
+    0x39,  # vpminsd
+    0x3A,  # vpminuw
+    0x3B,  # vpminud
+    0x3C,  # vpmaxsb
+    0x3D,  # vpmaxsd
+    0x3E,  # vpmaxuw
+    0x3F,  # vpmaxud
+    0x40,  # vpmulld
 )
 
 
@@ -102,10 +86,7 @@ def patch_avx2_packed_integer_ops(source_root: Path) -> None:
 """
 
     if text.count(old_classification) != 1:
-        raise RuntimeError(
-            "Base AVX binary classification no longer matches the audited patch"
-        )
-
+        raise RuntimeError("Base AVX binary classification no longer matches the audited patch")
     occurrences = text.count("vex_xor")
     if occurrences < 5:
         raise RuntimeError(
@@ -114,7 +95,6 @@ def patch_avx2_packed_integer_ops(source_root: Path) -> None:
 
     text = text.replace(old_classification, new_classification, 1)
     text = text.replace("vex_xor", "vex_binary")
-
     text = text.replace(
         "true three-operand XOR plus\n     * VMOVDQA/VMOVDQU are the only vector operations allowed to use VEX.L=1.",
         "audited three-operand lane-local binary ops plus\n     * VMOVDQA/VMOVDQU are the only vector operations allowed to use VEX.L=1.",
@@ -125,5 +105,135 @@ def patch_avx2_packed_integer_ops(source_root: Path) -> None:
         "move/packed-binary closure. Do not turn this into a broad VEX.L enable.",
         1,
     )
+    translate_path.write_text(text)
+
+
+def patch_avx2_map38_lane_local_ops(source_root: Path) -> None:
+    translate_path = source_root / "unicorn" / "qemu" / "target" / "i386" / "translate.c"
+    text = translate_path.read_text()
+
+    declaration_before = """    int vex_binary, vex_vector_move;
+    SSEFunc_0_epp sse_fn_epp;
+"""
+    declaration_after = """    int vex_binary, vex_vector_move, vex_map38;
+    SSEFunc_0_epp sse_fn_epp;
+"""
+    if text.count(declaration_before) != 1:
+        raise RuntimeError("AVX declaration block no longer matches before 0F38 extension")
+    text = text.replace(declaration_before, declaration_after, 1)
+
+    classify_before = """    vex_vector_move = (s->prefix & PREFIX_VEX) && is_xmm &&
+                      ((b == 0x6f || b == 0x7f) &&
+                       (b1 == 1 || b1 == 2));
+"""
+    classify_after = """    /* 0F38's real opcode byte is read later into modrm. Permit only the
+     * 66/VEX map to reach that decoder; an explicit opcode allow-list there
+     * rejects every unaudited VEX form before it can execute. */
+    vex_map38 = (s->prefix & PREFIX_VEX) && is_xmm && b == 0x38 && b1 == 1;
+    vex_vector_move = (s->prefix & PREFIX_VEX) && is_xmm &&
+                      ((b == 0x6f || b == 0x7f) &&
+                       (b1 == 1 || b1 == 2));
+"""
+    if text.count(classify_before) != 1:
+        raise RuntimeError("AVX vector-move classification no longer matches before 0F38 extension")
+    text = text.replace(classify_before, classify_after, 1)
+
+    guard_before = """    if (s->vex_l != 0 && !(vex_binary || vex_vector_move)) {
+        goto illegal_op;
+    }
+"""
+    guard_after = """    if (s->vex_l != 0 && !(vex_binary || vex_vector_move || vex_map38)) {
+        goto illegal_op;
+    }
+"""
+    if text.count(guard_before) != 1:
+        raise RuntimeError("AVX VEX.L guard no longer matches before 0F38 extension")
+    text = text.replace(guard_before, guard_after, 1)
+
+    allow_cases = "\n".join(f"                case 0x{opcode:02x}:" for opcode in MAP38_BINARY_OPCODES)
+    map_entry_before = """        case 0x138:
+        case 0x038:
+            b = modrm;
+            if ((b & 0xf0) == 0xf0) {
+"""
+    map_entry_after = f"""        case 0x138:
+        case 0x038:
+            b = modrm;
+            if (vex_map38) {{
+                /* Fail closed before any helper lookup or BMI/CRC side path. */
+                switch (b) {{
+{allow_cases}
+                    break;
+                default:
+                    goto illegal_op;
+                }}
+            }}
+            if ((b & 0xf0) == 0xf0) {{
+"""
+    if text.count(map_entry_before) != 1:
+        raise RuntimeError("Pinned 0F38 entry block no longer matches the audited source")
+    text = text.replace(map_entry_before, map_entry_after, 1)
+
+    helper_anchor_before = """            if (!(s->cpuid_ext_features & sse_op_table6[b].ext_mask))
+                goto illegal_op;
+
+            if (b1) {
+"""
+    helper_anchor_after = """            if (!(s->cpuid_ext_features & sse_op_table6[b].ext_mask))
+                goto illegal_op;
+
+            if (vex_map38) {
+                int src1_offset = offsetof(CPUX86State, xmm_regs[s->vex_v]);
+
+                op1_offset = offsetof(CPUX86State, xmm_regs[reg]);
+                if (mod == 3) {
+                    rm = (modrm & 7) | REX_B(s);
+                    op2_offset = offsetof(CPUX86State, xmm_regs[rm]);
+                    if (rm == reg) {
+                        /* src2 aliases destination: snapshot before copying src1. */
+                        if (s->vex_l) {
+                            gen_op_movy(s, offsetof(CPUX86State, xmm_t0), op2_offset);
+                        } else {
+                            gen_op_movo(s, offsetof(CPUX86State, xmm_t0), op2_offset);
+                        }
+                        op2_offset = offsetof(CPUX86State, xmm_t0);
+                    }
+                } else {
+                    /* Load memory through scratch so an upper-lane fault cannot
+                     * partially mutate the architectural destination. */
+                    gen_lea_modrm(env, s, modrm);
+                    op2_offset = offsetof(CPUX86State, xmm_t0);
+                    if (s->vex_l) {
+                        gen_ldy_env_A0(s, op2_offset);
+                    } else {
+                        gen_ldo_env_A0(s, op2_offset);
+                    }
+                }
+
+                if (s->vex_v != reg) {
+                    if (s->vex_l) {
+                        gen_op_movy(s, op1_offset, src1_offset);
+                    } else {
+                        gen_op_movo(s, op1_offset, src1_offset);
+                    }
+                }
+
+                tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset);
+                tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset);
+                sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
+                if (s->vex_l) {
+                    tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset + 16);
+                    tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset + 16);
+                    sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
+                }
+                gen_op_zero_vex_upper(s, op1_offset, s->vex_l);
+                break;
+            }
+
+            if (b1) {
+"""
+    if text.count(helper_anchor_before) != 1:
+        raise RuntimeError("Pinned 0F38 helper dispatch no longer matches the audited source")
+    text = text.replace(helper_anchor_before, helper_anchor_after, 1)
 
     translate_path.write_text(text)
