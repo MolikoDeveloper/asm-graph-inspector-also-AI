@@ -80,6 +80,9 @@ jobs:
       - name: AVX floating-point broadcast semantics
         run: bun tests/execution/unicorn-avx-fp-broadcast-smoke.ts
 
+      - name: AVX VPTEST semantics
+        run: bun tests/execution/unicorn-avx-vptest-smoke.ts
+
       - name: AVX2 VPERMD cross-lane semantics
         run: bun tests/execution/unicorn-avx2-vpermd-smoke.ts
 
