@@ -76,17 +76,20 @@ function runSemanticClosure(module: UnicornModule): void {
 
 function assertUnimplementedAvx2StillFailsClosed(module: UnicornModule): void {
   const engine = new module.Unicorn(module.ARCH_X86, module.MODE_64);
-  // VPERMD ymm0, ymm1, ymm2 is deliberately cross-lane and remains outside
-  // the audited lane-local closure. Keeping this rejection explicit prevents
-  // the VEX.L gate from accidentally becoming a blanket AVX2 switch.
-  const unsupported = [0xc4, 0xe2, 0x75, 0x36, 0xc2];
+  // VPMASKMOVD is a valid AVX2 memory operation that remains outside the
+  // audited subset. Keeping this rejection explicit prevents the VEX.L gate
+  // from accidentally becoming a blanket AVX2 switch as cross-lane support grows.
+  const unsupported = [0xc4, 0xe2, 0x75, 0x8c, 0x00]; // vpmaskmovd ymm0, ymm1, [rax]
   try {
     engine.mem_map(CODE, PAGE, module.PROT_ALL);
+    engine.mem_map(DATA, PAGE, module.PROT_READ | module.PROT_WRITE);
     engine.mem_write(CODE, unsupported);
+    engine.mem_write(DATA, new Array(32).fill(0));
+    engine.reg_write_i64(module.X86_REG_RAX, BigInt(DATA));
     assert.throws(
       () => engine.emu_start(CODE, CODE + unsupported.length, 0, 1),
       /Invalid instruction|UC_ERR_INSN_INVALID|invalid/i,
-      'cross-lane AVX2 opcodes must remain fail-closed'
+      'unaudited AVX2 memory families must remain fail-closed'
     );
   } finally {
     engine.close();
@@ -101,7 +104,7 @@ try {
 
   runSemanticClosure(module);
   assertUnimplementedAvx2StillFailsClosed(module);
-  console.log('Unicorn AVX2 basics smoke: PASS (YMM load/store + 3-operand VPXOR + aliasing + memory source + VEX.128 zero-upper + fail-closed cross-lane remainder)');
+  console.log('Unicorn AVX2 basics smoke: PASS (YMM load/store + 3-operand VPXOR + aliasing + memory source + VEX.128 zero-upper + fail-closed unaudited remainder)');
 } finally {
   rmSync(temp, { recursive: true, force: true });
 }
