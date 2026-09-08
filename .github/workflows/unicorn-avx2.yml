@@ -51,5 +51,8 @@ jobs:
       - name: AVX2 lane-local integer semantics
         run: bun tests/execution/unicorn-avx2-lane-local-smoke.ts
 
+      - name: AVX2 pack and unpack semantics
+        run: bun tests/execution/unicorn-avx2-pack-unpack-smoke.ts
+
       - name: Typecheck
         run: bun run typecheck
