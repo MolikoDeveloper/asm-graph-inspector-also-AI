@@ -42,6 +42,9 @@ jobs:
       - name: Unicorn capability smoke
         run: bun tests/execution/unicorn-capabilities-smoke.ts
 
+      - name: Unicorn capability scope
+        run: bun tests/execution/unicorn-capability-scope-smoke.ts
+
       - name: AVX2 semantic basics
         run: bun tests/execution/unicorn-avx2-basics-smoke.ts
 
@@ -62,6 +65,9 @@ jobs:
 
       - name: AVX2 packed absolute-value semantics
         run: bun tests/execution/unicorn-avx2-abs-smoke.ts
+
+      - name: AVX2 variable-count shift semantics
+        run: bun tests/execution/unicorn-avx2-variable-shifts-smoke.ts
 
       - name: Typecheck
         run: bun run typecheck
