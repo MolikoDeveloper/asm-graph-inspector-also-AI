@@ -105,16 +105,17 @@ function runOperation(
 
 function assertStillUnsupported(module: UnicornModule): void {
   const engine = new module.Unicorn(module.ARCH_X86, module.MODE_64);
-  // VPMULLW is lane-local but intentionally not part of this increment. This
-  // proves the extension is an allow-list, not a blanket VEX.L gate removal.
-  const unsupported = [0xc5, 0xf5, 0xd5, 0xc2]; // vpmullw ymm0, ymm1, ymm2
+  // VPERMD crosses the two 128-bit halves of YMM and intentionally remains
+  // outside this lane-local increment. This proves the extension is an
+  // allow-list, not a blanket VEX.L gate removal.
+  const unsupported = [0xc4, 0xe2, 0x75, 0x36, 0xc2]; // vpermd ymm0, ymm1, ymm2
   try {
     engine.mem_map(CODE, PAGE, module.PROT_ALL);
     engine.mem_write(CODE, unsupported);
     assert.throws(
       () => engine.emu_start(CODE, CODE + unsupported.length, 0, 1),
       /Invalid instruction|UC_ERR_INSN_INVALID|invalid/i,
-      'VPMULLW must remain fail-closed until explicitly enabled'
+      'VPERMD must remain fail-closed until dedicated cross-lane lowering exists'
     );
   } finally {
     engine.close();
@@ -142,7 +143,7 @@ try {
   assertStillUnsupported(module);
 
   console.log(
-    `Unicorn AVX2 packed integer smoke: PASS (${OPERATIONS.length} explicit 256-bit ops + overflow/borrow semantics + fail-closed VPMULLW)`
+    `Unicorn AVX2 packed integer smoke: PASS (${OPERATIONS.length} explicit 256-bit ops + overflow/borrow semantics + fail-closed VPERMD)`
   );
 } finally {
   rmSync(temp, { recursive: true, force: true });
