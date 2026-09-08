@@ -37,10 +37,9 @@ PACKED_BINARY_OPCODES = (
 )
 
 # 66 0F38 operations backed by existing SSSE3/SSE4.x XMM helpers. These are
-# also lane-local for AVX2. The old translator's 0F38 path is destructive and
+# lane-local for AVX2. The old translator's 0F38 path is destructive and
 # 128-bit-only, so this family needs a separate VEX-aware adapter below.
 MAP38_BINARY_OPCODES = (
-    # SSSE3 horizontal/shuffle/sign/multiply family.
     0x00,  # vpshufb
     0x01,  # vphaddw
     0x02,  # vphaddd
@@ -53,7 +52,6 @@ MAP38_BINARY_OPCODES = (
     0x09,  # vpsignw
     0x0A,  # vpsignd
     0x0B,  # vpmulhrsw
-    # SSE4.x operations extended to 256 bits by AVX2.
     0x28,  # vpmuldq
     0x29,  # vpcmpeqq
     0x2B,  # vpackusdw
@@ -67,6 +65,15 @@ MAP38_BINARY_OPCODES = (
     0x3E,  # vpmaxuw
     0x3F,  # vpmaxud
     0x40,  # vpmulld
+)
+
+# AVX2 packed sign/zero-extension moves. A 256-bit destination consumes only
+# 4/8/16 source bytes depending on the element-width ratio. The XMM helpers
+# already implement one 128-bit destination, so the adapter invokes them twice
+# with source pointers separated by exactly the helper's consumed byte count.
+MAP38_EXTEND_OPCODES = (
+    0x20, 0x21, 0x22, 0x23, 0x24, 0x25,  # vpmovsx*
+    0x30, 0x31, 0x32, 0x33, 0x34, 0x35,  # vpmovzx*
 )
 
 
@@ -150,7 +157,8 @@ def patch_avx2_map38_lane_local_ops(source_root: Path) -> None:
         raise RuntimeError("AVX VEX.L guard no longer matches before 0F38 extension")
     text = text.replace(guard_before, guard_after, 1)
 
-    allow_cases = "\n".join(f"                case 0x{opcode:02x}:" for opcode in MAP38_BINARY_OPCODES)
+    allowed = MAP38_BINARY_OPCODES + MAP38_EXTEND_OPCODES
+    allow_cases = "\n".join(f"                case 0x{opcode:02x}:" for opcode in allowed)
     map_entry_before = """        case 0x138:
         case 0x038:
             b = modrm;
@@ -174,19 +182,153 @@ def patch_avx2_map38_lane_local_ops(source_root: Path) -> None:
         raise RuntimeError("Pinned 0F38 entry block no longer matches the audited source")
     text = text.replace(map_entry_before, map_entry_after, 1)
 
+    extend_cases = " ".join(f"case 0x{opcode:02x}:" for opcode in MAP38_EXTEND_OPCODES)
     helper_anchor_before = """            if (!(s->cpuid_ext_features & sse_op_table6[b].ext_mask))
-                goto illegal_op;
-
-            if (b1) {
-"""
-    helper_anchor_after = """            if (!(s->cpuid_ext_features & sse_op_table6[b].ext_mask))
                 goto illegal_op;
 
             if (vex_map38) {
                 int src1_offset = offsetof(CPUX86State, xmm_regs[s->vex_v]);
 
                 op1_offset = offsetof(CPUX86State, xmm_regs[reg]);
-                if (mod == 3) {
+"""
+    helper_anchor_after = f"""            if (!(s->cpuid_ext_features & sse_op_table6[b].ext_mask))
+                goto illegal_op;
+
+            if (vex_map38) {{
+                int src1_offset = offsetof(CPUX86State, xmm_regs[s->vex_v]);
+
+                op1_offset = offsetof(CPUX86State, xmm_regs[reg]);
+
+                switch (b) {{
+                {extend_cases}
+                    {{
+                        int source_chunk;
+                        int source_bytes;
+
+                        /* Reserved VEX.vvvv must encode 1111b, decoded here as 0. */
+                        if (s->vex_v != 0) {{
+                            goto illegal_op;
+                        }}
+                        switch (b) {{
+                        case 0x20: case 0x23: case 0x25:
+                        case 0x30: case 0x33: case 0x35:
+                            source_chunk = 8;
+                            break;
+                        case 0x21: case 0x24: case 0x31: case 0x34:
+                            source_chunk = 4;
+                            break;
+                        case 0x22: case 0x32:
+                            source_chunk = 2;
+                            break;
+                        default:
+                            goto illegal_op;
+                        }}
+                        source_bytes = source_chunk * (s->vex_l ? 2 : 1);
+
+                        if (mod == 3) {{
+                            rm = (modrm & 7) | REX_B(s);
+                            op2_offset = offsetof(CPUX86State, xmm_regs[rm]);
+                            if (rm == reg) {{
+                                /* Destination overwrites the same architectural
+                                 * register that supplies the narrow source. */
+                                gen_op_movo(s, offsetof(CPUX86State, xmm_t0), op2_offset);
+                                op2_offset = offsetof(CPUX86State, xmm_t0);
+                            }}
+                        }} else {{
+                            gen_lea_modrm(env, s, modrm);
+                            op2_offset = offsetof(CPUX86State, xmm_t0);
+                            switch (source_bytes) {{
+                            case 16:
+                                gen_ldo_env_A0(s, op2_offset);
+                                break;
+                            case 8:
+                                gen_ldq_env_A0(s, op2_offset);
+                                break;
+                            case 4:
+                                tcg_gen_qemu_ld_i32(tcg_ctx, s->tmp2_i32, s->A0,
+                                                    s->mem_index, MO_LEUL);
+                                tcg_gen_st_i32(tcg_ctx, s->tmp2_i32, tcg_ctx->cpu_env,
+                                               op2_offset + offsetof(ZMMReg, ZMM_L(0)));
+                                break;
+                            case 2:
+                                tcg_gen_qemu_ld_tl(tcg_ctx, s->tmp0, s->A0,
+                                                   s->mem_index, MO_LEUW);
+                                tcg_gen_st16_tl(tcg_ctx, s->tmp0, tcg_ctx->cpu_env,
+                                                op2_offset + offsetof(ZMMReg, ZMM_W(0)));
+                                break;
+                            default:
+                                goto illegal_op;
+                            }}
+                        }}
+
+                        tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset);
+                        tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset);
+                        sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
+                        if (s->vex_l) {{
+                            tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env,
+                                            op1_offset + 16);
+                            tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env,
+                                            op2_offset + source_chunk);
+                            sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
+                        }}
+                        gen_op_zero_vex_upper(s, op1_offset, s->vex_l);
+                        break;
+                    }}
+                default:
+                    if (mod == 3) {{
+                        rm = (modrm & 7) | REX_B(s);
+                        op2_offset = offsetof(CPUX86State, xmm_regs[rm]);
+                        if (rm == reg) {{
+                            /* src2 aliases destination: snapshot before copying src1. */
+                            if (s->vex_l) {{
+                                gen_op_movy(s, offsetof(CPUX86State, xmm_t0), op2_offset);
+                            }} else {{
+                                gen_op_movo(s, offsetof(CPUX86State, xmm_t0), op2_offset);
+                            }}
+                            op2_offset = offsetof(CPUX86State, xmm_t0);
+                        }}
+                    }} else {{
+                        /* Load memory through scratch so an upper-lane fault cannot
+                         * partially mutate the architectural destination. */
+                        gen_lea_modrm(env, s, modrm);
+                        op2_offset = offsetof(CPUX86State, xmm_t0);
+                        if (s->vex_l) {{
+                            gen_ldy_env_A0(s, op2_offset);
+                        }} else {{
+                            gen_ldo_env_A0(s, op2_offset);
+                        }}
+                    }}
+
+                    if (s->vex_v != reg) {{
+                        if (s->vex_l) {{
+                            gen_op_movy(s, op1_offset, src1_offset);
+                        }} else {{
+                            gen_op_movo(s, op1_offset, src1_offset);
+                        }}
+                    }}
+
+                    tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset);
+                    tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset);
+                    sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
+                    if (s->vex_l) {{
+                        tcg_gen_addi_ptr(tcg_ctx, s->ptr0, tcg_ctx->cpu_env, op1_offset + 16);
+                        tcg_gen_addi_ptr(tcg_ctx, s->ptr1, tcg_ctx->cpu_env, op2_offset + 16);
+                        sse_fn_epp(tcg_ctx, tcg_ctx->cpu_env, s->ptr0, s->ptr1);
+                    }}
+                    gen_op_zero_vex_upper(s, op1_offset, s->vex_l);
+                    break;
+                }}
+                break;
+            }}
+
+            if (b1) {{
+"""
+    if text.count(helper_anchor_before) != 1:
+        raise RuntimeError("Pinned 0F38 helper dispatch no longer matches the audited source")
+    text = text.replace(helper_anchor_before, helper_anchor_after, 1)
+
+    # Remove the old binary adapter tail that the replacement above supersedes.
+    old_tail = """                if (mod == 3) {
                     rm = (modrm & 7) | REX_B(s);
                     op2_offset = offsetof(CPUX86State, xmm_regs[rm]);
                     if (rm == reg) {
@@ -232,8 +374,9 @@ def patch_avx2_map38_lane_local_ops(source_root: Path) -> None:
 
             if (b1) {
 """
-    if text.count(helper_anchor_before) != 1:
-        raise RuntimeError("Pinned 0F38 helper dispatch no longer matches the audited source")
-    text = text.replace(helper_anchor_before, helper_anchor_after, 1)
+    # The anchor replacement is intentionally constructed to consume this tail.
+    # If it remains, the patch would execute duplicate lowering.
+    if text.count(old_tail):
+        raise RuntimeError("0F38 binary adapter tail unexpectedly remained after extension rewrite")
 
     translate_path.write_text(text)
