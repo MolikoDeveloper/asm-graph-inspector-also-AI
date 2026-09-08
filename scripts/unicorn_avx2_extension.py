@@ -1,12 +1,12 @@
 #!/usr/bin/env python3
 """Incremental AVX2 extensions for the pinned Unicorn/QEMU translator.
 
-This module intentionally runs *after* patch_avx_vector_basics().  It only widens
+This module intentionally runs *after* patch_avx_vector_basics(). It only widens
 an audited set of lane-local packed integer operations whose existing XMM helpers
 have identical per-128-bit semantics when applied independently to the low/high
 halves of a YMM register.
 
-Do not turn this into a blanket VEX.L enable. Cross-lane shuffles, variable-count
+Do not turn this into a blanket VEX.L enable. Cross-lane shuffles, vector-count
 shifts, broadcasts, gathers and other AVX2-specific semantics require dedicated
 lowering and stay fail-closed until implemented and tested.
 """
@@ -21,6 +21,15 @@ from pathlib import Path
 # invokes the XMM helper once per 128-bit lane, and applies VEX zero-upper rules.
 # These opcodes can therefore safely reuse that exact lowering.
 PACKED_BINARY_OPCODES = (
+    # Compare.
+    0x64,  # vpcmpgtb
+    0x65,  # vpcmpgtw
+    0x66,  # vpcmpgtd
+    0x74,  # vpcmpeqb
+    0x75,  # vpcmpeqw
+    0x76,  # vpcmpeqd
+
+    # Add/subtract and logical core.
     0xD4,  # vpaddq
     0xDB,  # vpand
     0xDF,  # vpandn
@@ -33,6 +42,34 @@ PACKED_BINARY_OPCODES = (
     0xFC,  # vpaddb
     0xFD,  # vpaddw
     0xFE,  # vpaddd
+
+    # Multiply / horizontal-within-element-pairs / absolute-difference sum.
+    0xD5,  # vpmullw
+    0xE4,  # vpmulhuw
+    0xE5,  # vpmulhw
+    0xF4,  # vpmuludq
+    0xF5,  # vpmaddwd
+    0xF6,  # vpsadbw
+
+    # Unsigned saturating arithmetic and min/max.
+    0xD8,  # vpsubusb
+    0xD9,  # vpsubusw
+    0xDA,  # vpminub
+    0xDC,  # vpaddusb
+    0xDD,  # vpaddusw
+    0xDE,  # vpmaxub
+
+    # Rounded averages.
+    0xE0,  # vpavgb
+    0xE3,  # vpavgw
+
+    # Signed saturating arithmetic and min/max.
+    0xE8,  # vpsubsb
+    0xE9,  # vpsubsw
+    0xEA,  # vpminsw
+    0xEC,  # vpaddsb
+    0xED,  # vpaddsw
+    0xEE,  # vpmaxsw
 )
 
 
