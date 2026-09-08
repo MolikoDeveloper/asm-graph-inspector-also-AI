@@ -57,5 +57,8 @@ jobs:
       - name: AVX2 0F38 lane-local semantics
         run: bun tests/execution/unicorn-avx2-map38-smoke.ts
 
+      - name: AVX2 packed extension semantics
+        run: bun tests/execution/unicorn-avx2-extend-smoke.ts
+
       - name: Typecheck
         run: bun run typecheck
