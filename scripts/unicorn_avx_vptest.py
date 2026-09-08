@@ -58,12 +58,20 @@ def patch_avx_vptest_decoder(source_root: Path) -> None:
     translate_path = source_root / "unicorn" / "qemu" / "target" / "i386" / "translate.c"
     text = translate_path.read_text()
 
+    # Match the whole FP-broadcast insertion point. The shorter 0x18/0x19
+    # sequence also appears in other switch blocks after the preceding layers,
+    # which made the patch order-dependent even though the target block itself
+    # was unchanged.
     allow_anchor = """                case 0x18:
                 case 0x19:
+                case 0x1a:
+                case 0x35:
 """
     allow_replacement = """                case 0x17:
                 case 0x18:
                 case 0x19:
+                case 0x1a:
+                case 0x35:
 """
     if text.count(allow_anchor) != 1:
         raise RuntimeError("FP-broadcast 0F38 allow-list anchor no longer matches before VPTEST extension")
