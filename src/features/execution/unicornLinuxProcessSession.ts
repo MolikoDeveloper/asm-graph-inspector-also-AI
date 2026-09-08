@@ -174,6 +174,19 @@ function safeNumber(value: bigint, label: string): number {
   return number;
 }
 
+/**
+ * Do not use Unicorn's code-hook size as the Capstone input length: VEX/BMI
+ * translations can report a truncated size. Read the x86 maximum and shrink
+ * only when the next page is unmapped.
+ */
+function instructionBytes(engine: UnicornEngine, address: bigint): Uint8Array {
+  for (let length = MAX_X86_INSTRUCTION_BYTES; length >= 1; length -= 1) {
+    try { return engine.mem_read(address, length); }
+    catch { /* a short instruction can end at an unmapped page boundary */ }
+  }
+  throw new Error(`Unable to read Unicorn instruction bytes at 0x${address.toString(16)}.`);
+}
+
 function signedNumber(value: bigint): number {
   return Number(BigInt.asIntN(64, value));
 }
@@ -573,7 +586,7 @@ export class UnicornLinuxProcessSession {
     return null;
   }
 
-  private onInstruction(runtimeAddress: bigint, size: number): void {
+  private onInstruction(runtimeAddress: bigint, _reportedSize: number): void {
     if (terminal(this.statusValue)) { this.engine.emu_stop(); return; }
     if (this.instructionCountValue >= this.policy.maxInstructions) {
       this.trap(`Instruction budget exhausted at ${this.policy.maxInstructions} instructions.`);
@@ -582,7 +595,7 @@ export class UnicornLinuxProcessSession {
     }
     try {
       const address = safeNumber(runtimeAddress, 'Unicorn RIP');
-      const bytes = this.engine.mem_read(runtimeAddress, Math.max(1, Math.min(MAX_X86_INSTRUCTION_BYTES, Number.isFinite(size) ? size : MAX_X86_INSTRUCTION_BYTES)));
+      const bytes = instructionBytes(this.engine, runtimeAddress);
       const decoded = this.decoder.decodeOne(bytes, address);
       if (!decoded) throw new Error(`Capstone could not decode Unicorn instruction at 0x${address.toString(16)}.`);
       const runtimeImage = this.runtimeImageAt(address);

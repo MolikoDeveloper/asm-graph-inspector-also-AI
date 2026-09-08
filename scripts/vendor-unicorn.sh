@@ -26,13 +26,14 @@ if [[ "$ACTUAL_UNICORN_JS_COMMIT" != "$UNICORN_JS_COMMIT" ]]; then
   exit 1
 fi
 
-node -e '
+UNICORN_PACKAGE_JSON="$SOURCE_DIR/package.json" UNICORN_EXPECTED_VERSION="$UNICORN_VERSION" node -e '
 const fs = require("fs");
-const p = JSON.parse(fs.readFileSync(process.argv[1], "utf8"));
-if (p.name !== "@alexaltea/unicorn-js" || p.version !== process.argv[2]) {
+const { UNICORN_PACKAGE_JSON: packagePath, UNICORN_EXPECTED_VERSION: expectedVersion } = process.env;
+const p = JSON.parse(fs.readFileSync(packagePath, "utf8"));
+if (p.name !== "@alexaltea/unicorn-js" || p.version !== expectedVersion) {
   throw new Error(`Unexpected Unicorn.js source identity: ${p.name}@${p.version}`);
 }
-' "$SOURCE_DIR/package.json" "$UNICORN_VERSION"
+'
 
 git -C "$SOURCE_DIR" submodule update --init --depth 1 unicorn
 ACTUAL_UNICORN_CORE_COMMIT="$(git -C "$SOURCE_DIR/unicorn" rev-parse HEAD)"

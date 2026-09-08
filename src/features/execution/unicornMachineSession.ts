@@ -69,6 +69,20 @@ function safeNumber(value: bigint, label: string): number {
   return number;
 }
 
+/**
+ * Unicorn's HOOK_CODE size is useful execution metadata, but some VEX/BMI
+ * translations report a truncated length. Capstone must see the complete
+ * x86 instruction stream to decode it. At a mapping boundary, retry shorter
+ * reads so a valid short instruction does not become a false trap.
+ */
+function instructionBytes(engine: UnicornEngine, address: bigint): Uint8Array {
+  for (let length = MAX_X86_INSTRUCTION_BYTES; length >= 1; length -= 1) {
+    try { return engine.mem_read(address, length); }
+    catch { /* the following page can be unmapped after a valid instruction */ }
+  }
+  throw new Error(`Unable to read Unicorn instruction bytes at 0x${address.toString(16)}.`);
+}
+
 function terminal(status: ExecutionStatus): boolean {
   return status === 'exited' || status === 'halted' || status === 'trapped';
 }
@@ -272,7 +286,7 @@ export class UnicornMachineSession {
     });
   }
 
-  private onInstruction(runtimeAddress: bigint, size: number): void {
+  private onInstruction(runtimeAddress: bigint, _reportedSize: number): void {
     if (terminal(this.statusValue)) {
       this.engine.emu_stop();
       return;
@@ -285,8 +299,7 @@ export class UnicornMachineSession {
 
     try {
       const address = safeNumber(runtimeAddress, 'Unicorn RIP');
-      const byteCount = Math.max(1, Math.min(MAX_X86_INSTRUCTION_BYTES, Number.isFinite(size) ? size : MAX_X86_INSTRUCTION_BYTES));
-      const bytes = this.engine.mem_read(runtimeAddress, byteCount);
+      const bytes = instructionBytes(this.engine, runtimeAddress);
       const instruction = this.decoder.decodeOne(bytes, address);
       if (!instruction) throw new Error(`Capstone could not decode Unicorn instruction at 0x${address.toString(16)}.`);
       this.lastInstructionValue = instruction;
