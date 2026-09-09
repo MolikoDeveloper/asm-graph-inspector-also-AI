@@ -37,6 +37,7 @@ from unicorn_avx_vptest import patch_avx_vptest_decoder, patch_avx_vptest_helper
 from unicorn_avx_extension import patch_avx_map1_binary_and_moves
 from unicorn_avx_vpmovmskb import patch_avx_vpmovmskb_decoder
 from unicorn_avx_zero_state import patch_avx_zero_state
+from unicorn_avx_vblendvpd import patch_avx_vblendvpd_decoder
 
 
 def load_base_builder(script_dir: Path):
@@ -81,6 +82,7 @@ def main() -> None:
     patch_avx_map1_binary_and_moves(source_root)
     patch_avx_vpmovmskb_decoder(source_root)
     patch_avx_zero_state(source_root)
+    patch_avx_vblendvpd_decoder(source_root)
     upstream.generateConstants()
     upstream.compileUnicorn(["x86"])
 
