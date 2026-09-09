@@ -21,14 +21,14 @@ def patch_avx_vblendvpd_decoder(source_root: Path) -> None:
     translate_path = source_root / "unicorn" / "qemu" / "target" / "i386" / "translate.c"
     text = translate_path.read_text()
 
-    declaration_before = """    int vex_binary, vex_vector_move, vex_map38;
+    declaration_before = """    int vex_binary, vex_vector_move, vex_map38, vex_movmask;
     SSEFunc_0_epp sse_fn_epp;
 """
-    declaration_after = """    int vex_binary, vex_vector_move, vex_map38, vex_map3a_vblendvpd;
+    declaration_after = """    int vex_binary, vex_vector_move, vex_map38, vex_movmask, vex_map3a_vblendvpd;
     SSEFunc_0_epp sse_fn_epp;
 """
     if text.count(declaration_before) != 1:
-        raise RuntimeError("Final AVX declaration block no longer matches before VBLENDVPD extension")
+        raise RuntimeError("Final post-VPMOVMSKB AVX declaration block no longer matches before VBLENDVPD extension")
     text = text.replace(declaration_before, declaration_after, 1)
 
     classification_before = """    vex_map38 = (s->prefix & PREFIX_VEX) && is_xmm && b == 0x38 && b1 == 1;
@@ -46,17 +46,17 @@ def patch_avx_vblendvpd_decoder(source_root: Path) -> None:
         raise RuntimeError("Final AVX map38 classification no longer matches before VBLENDVPD extension")
     text = text.replace(classification_before, classification_after, 1)
 
-    guard_before = """    if (s->vex_l != 0 && !(vex_binary || vex_vector_move || vex_map38)) {
+    guard_before = """    if (s->vex_l != 0 && !(vex_binary || vex_vector_move || vex_map38 || vex_movmask)) {
         goto illegal_op;
     }
 """
     guard_after = """    if (s->vex_l != 0 &&
-        !(vex_binary || vex_vector_move || vex_map38 || vex_map3a_vblendvpd)) {
+        !(vex_binary || vex_vector_move || vex_map38 || vex_movmask || vex_map3a_vblendvpd)) {
         goto illegal_op;
     }
 """
     if text.count(guard_before) != 1:
-        raise RuntimeError("Final AVX VEX.L guard no longer matches before VBLENDVPD extension")
+        raise RuntimeError("Final post-VPMOVMSKB VEX.L guard no longer matches before VBLENDVPD extension")
     text = text.replace(guard_before, guard_after, 1)
 
     map3a_before = """        case 0x03a:
