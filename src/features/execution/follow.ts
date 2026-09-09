@@ -3,7 +3,7 @@ import type { BinaryAnalysisSummary } from '../binary/model';
 import type { ExecutionSnapshot } from './model';
 
 export function executionAddressFromSnapshot(snapshot: ExecutionSnapshot): number | null {
-  if (snapshot.status !== 'paused') return null;
+  if (snapshot.status !== 'paused' && snapshot.status !== 'running') return null;
 
   // Process backends execute code from several loaded images. Only a RIP proven
   // to belong to the program may be projected into its static Capstone model.
@@ -116,7 +116,7 @@ export function projectExecutionTrace(graph: AnalysisGraph | null, snapshot: Exe
     if (!processOutsideProgram) {
       if (snapshot.lastInstruction?.nodeId && graph.nodes.some((node) => node.id === snapshot.lastInstruction!.nodeId)) currentNodeId = snapshot.lastInstruction.nodeId;
       else {
-        const address = executionAddressFromSnapshot({ ...snapshot, status: 'paused' });
+        const address = executionAddressFromSnapshot(snapshot);
         if (address !== null) currentNodeId = graphNodeForAddress(graph, address)?.id ?? null;
       }
     }
