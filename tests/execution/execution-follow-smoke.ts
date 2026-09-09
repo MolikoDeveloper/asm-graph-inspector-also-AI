@@ -80,7 +80,7 @@ assertEqual(findBinaryFunctionForAddress(summary, 0x406850), 0x406820, 'first fu
 assertEqual(findBinaryFunctionForAddress(summary, 0x407050), 0x407000, 'second function lookup');
 assertEqual(imageContainsExecutableAddress(summary, 0x406828), true, 'main image executable address');
 assertEqual(imageContainsExecutableAddress(summary, 0x500010), false, 'non-executable address');
-assertEqual(executionAddressFromSnapshot({ ...snapshot, status: 'running' }), null, 'running snapshot must not follow');
+assertEqual(executionAddressFromSnapshot({ ...snapshot, status: 'running' }), 0x406828, 'running snapshot must expose live cursor');
 
 const blinkProgramSnapshot = {
   status: 'paused',
@@ -92,6 +92,12 @@ const blinkProgramSnapshot = {
   }
 } as unknown as ExecutionSnapshot;
 assertEqual(executionAddressFromSnapshot(blinkProgramSnapshot), 0x406828, 'Blink program RIP must follow canonical image address');
+assertEqual(executionAddressFromSnapshot({ ...blinkProgramSnapshot, status: 'running' }), 0x406828, 'running process RIP must follow canonical image address');
+assertEqual(executionAddressFromSnapshot({
+  ...blinkProgramSnapshot,
+  status: 'running',
+  runtimeDisassembly: { image: { role: 'dependency', imageAddress: 0x1234n } }
+} as unknown as ExecutionSnapshot), null, 'running dependency RIP must not be projected into program CFG');
 assertEqual(executionAddressFromSnapshot({
   ...blinkProgramSnapshot,
   runtimeDisassembly: { image: { role: 'dependency', imageAddress: 0x1234n } }
@@ -128,4 +134,4 @@ assertEqual(crossedImageTrace.nodeCounts.get('bb-entry'), 1, 'cross-image trace 
 assertEqual(crossedImageTrace.nodeCounts.get('bb-next'), 1, 'cross-image trace next count');
 assertEqual(crossedImageTrace.edgeCounts.get('e') ?? 0, 0, 'cross-image trace must not invent a skipped CFG edge');
 
-console.log('execution follow smoke: PASS (program-image follow + executed-only CFG edges + runtime image gaps)');
+console.log('execution follow smoke: PASS (paused/running program cursor + executed-only CFG edges + runtime image gaps)');
