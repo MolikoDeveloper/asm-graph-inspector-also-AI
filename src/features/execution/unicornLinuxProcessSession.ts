@@ -53,6 +53,7 @@ const SYS_IOCTL = 16;
 const SYS_PREAD64 = 17;
 const SYS_WRITEV = 20;
 const SYS_ACCESS = 21;
+const SYS_MREMAP = 25;
 const SYS_MADVISE = 28;
 const SYS_GETPID = 39;
 const SYS_UNAME = 63;
@@ -84,6 +85,8 @@ const SEEK_END = 2;
 const MAP_FIXED = 0x10;
 const MAP_ANONYMOUS = 0x20;
 const MAP_FIXED_NOREPLACE = 0x100000;
+const MREMAP_MAYMOVE = 0x1;
+const MREMAP_FIXED = 0x2;
 const FUTEX_WAIT = 0;
 const FUTEX_WAKE = 1;
 const FUTEX_CMD_MASK = 0x7f;
@@ -94,7 +97,9 @@ const ARCH_GET_GS = 0x1004;
 const ENOENT = 2;
 const EBADF = 9;
 const EAGAIN = 11;
+const ENOMEM = 12;
 const EACCES = 13;
+const EFAULT = 14;
 const EINVAL = 22;
 const ENOTTY = 25;
 const ENOSYS = 38;
@@ -132,6 +137,12 @@ interface FileBackedMapping {
   address: number;
   size: number;
   fileOffset: number;
+}
+
+interface AnonymousMapping {
+  address: number;
+  size: number;
+  permissions: number;
 }
 
 function appendEvent(events: ExecutionEvent[], event: ExecutionEvent): void {
@@ -285,6 +296,7 @@ export class UnicornLinuxProcessSession {
   private filesByPath = new Map<string, VirtualFile>();
   private runtimeMappings: RuntimeImageMapping[] = [];
   private fileMappings: FileBackedMapping[] = [];
+  private anonymousMappings: AnonymousMapping[] = [];
   private lastInstructionRole: RuntimeImageMapping['file']['role'] | null = null;
   stdinBytes: Uint8Array;
   stdinCursor = 0;
@@ -355,9 +367,51 @@ export class UnicornLinuxProcessSession {
     this.mappedBytesValue += PAGE_SIZE;
   }
 
+  private discardAnonymousRange(start: number, end: number): void {
+    const next: AnonymousMapping[] = [];
+    for (const mapping of this.anonymousMappings) {
+      const mappingEnd = mapping.address + mapping.size;
+      if (mappingEnd <= start || mapping.address >= end) {
+        next.push(mapping);
+        continue;
+      }
+      if (mapping.address < start) next.push({ ...mapping, size: start - mapping.address });
+      if (mappingEnd > end) next.push({ ...mapping, address: end, size: mappingEnd - end });
+    }
+    this.anonymousMappings = next;
+  }
+
+  private rangeIsMapped(address: number, size: number): boolean {
+    const start = alignDown(address, PAGE_SIZE);
+    const end = alignUp(address + size, PAGE_SIZE);
+    for (let page = start; page < end; page += PAGE_SIZE) if (!this.mappedPages.has(page)) return false;
+    return true;
+  }
+
+  private rangeIsFree(address: number, size: number): boolean {
+    const start = alignDown(address, PAGE_SIZE);
+    const end = alignUp(address + size, PAGE_SIZE);
+    for (let page = start; page < end; page += PAGE_SIZE) if (this.mappedPages.has(page)) return false;
+    return true;
+  }
+
+  private findFreeMmapRange(size: number): number {
+    let address = alignUp(this.mmapCursorValue, PAGE_SIZE);
+    for (;;) {
+      let collision: number | null = null;
+      for (let page = address; page < address + size; page += PAGE_SIZE) {
+        if (this.mappedPages.has(page)) { collision = page; break; }
+      }
+      if (collision === null) return address;
+      address = collision + PAGE_SIZE;
+      if (!Number.isSafeInteger(address + size)) throw new Error('Unicorn Linux mmap address space exceeded the browser-safe integer range.');
+    }
+  }
+
   private mapRange(address: number, size: number, replace = false): void {
     const start = alignDown(address, PAGE_SIZE);
     const end = alignUp(address + size, PAGE_SIZE);
+    if (replace) this.discardAnonymousRange(start, end);
     for (let page = start; page < end; page += PAGE_SIZE) {
       if (replace && this.mappedPages.has(page)) {
         this.engine.mem_unmap(page, PAGE_SIZE);
@@ -385,6 +439,7 @@ export class UnicornLinuxProcessSession {
       this.mappedPages.delete(page);
       this.mappedBytesValue = Math.max(0, this.mappedBytesValue - PAGE_SIZE);
     }
+    this.discardAnonymousRange(start, end);
     this.fileMappings = this.fileMappings.filter((mapping) => mapping.address + mapping.size <= start || mapping.address >= end);
   }
 
@@ -620,7 +675,7 @@ export class UnicornLinuxProcessSession {
       this.lastInstructionRole = role;
 
       if (decoded.controlFlow === 'syscall' || decoded.mnemonic.toLowerCase() === 'syscall') {
-        this.virtualSyscall(BigInt(decoded.endAddress));
+        this.virtualSyscall(runtimeAddress, BigInt(decoded.endAddress));
         this.engine.emu_stop();
       }
     } catch (error) {
@@ -767,11 +822,92 @@ export class UnicornLinuxProcessSession {
       const available = Math.max(0, Math.min(length, opened.file.bytes.byteLength - fileOffset));
       if (available > 0) this.engine.mem_write(address, opened.file.bytes.subarray(fileOffset, fileOffset + available));
       this.fileMappings.push({ file: opened.file, address, size, fileOffset });
+    } else {
+      this.anonymousMappings.push({ address, size, permissions });
     }
     this.protectRange(address, size, permissions);
     if (!fixed) this.mmapCursorValue = address + size + PAGE_SIZE;
     this.setSyscallResult(address);
     this.recordSyscall(number, 'mmap', `address=0x${address.toString(16)}, length=${length}, fd=${fd}, offset=${fileOffset}`);
+  }
+
+  private syscallMremap(number: number): void {
+    const oldAddress = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI), 'mremap old address');
+    const oldLength = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RSI), 'mremap old length');
+    const newLength = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDX), 'mremap new length');
+    const flags = Number(this.engine.reg_read_i64(this.unicorn.X86_REG_R10));
+
+    if (oldAddress % PAGE_SIZE !== 0 || oldLength <= 0 || newLength <= 0) {
+      this.failSyscall(EINVAL);
+      this.recordSyscall(number, 'mremap', `old=0x${oldAddress.toString(16)}, old_size=${oldLength}, new_size=${newLength}, flags=0x${flags.toString(16)} -> -${EINVAL}`);
+      return;
+    }
+    if ((flags & ~MREMAP_MAYMOVE) !== 0) {
+      this.failSyscall(ENOSYS);
+      this.recordSyscall(number, 'mremap', `old=0x${oldAddress.toString(16)}, old_size=${oldLength}, new_size=${newLength}, flags=0x${flags.toString(16)}${flags & MREMAP_FIXED ? ' (MREMAP_FIXED unsupported)' : ''} -> -${ENOSYS}`);
+      return;
+    }
+
+    const oldSize = alignUp(oldLength, PAGE_SIZE);
+    const newSize = alignUp(newLength, PAGE_SIZE);
+    const mapping = this.anonymousMappings.find((candidate) => candidate.address === oldAddress && candidate.size === oldSize);
+    if (!mapping) {
+      const errno = this.rangeIsMapped(oldAddress, oldSize) ? ENOSYS : EFAULT;
+      this.failSyscall(errno);
+      this.recordSyscall(number, 'mremap', `old=0x${oldAddress.toString(16)}, old_size=${oldLength}, new_size=${newLength}, flags=0x${flags.toString(16)} -> -${errno} (${errno === ENOSYS ? 'non-anonymous or partial mapping unsupported' : 'source unmapped'})`);
+      return;
+    }
+
+    if (newSize === oldSize) {
+      this.setSyscallResult(oldAddress);
+      this.recordSyscall(number, 'mremap', `old=0x${oldAddress.toString(16)}, old_size=${oldLength}, new_size=${newLength}, flags=0x${flags.toString(16)} -> 0x${oldAddress.toString(16)}`);
+      return;
+    }
+
+    if (newSize < oldSize) {
+      this.unmapRange(oldAddress + newSize, oldSize - newSize);
+      this.setSyscallResult(oldAddress);
+      this.recordSyscall(number, 'mremap', `old=0x${oldAddress.toString(16)}, old_size=${oldLength}, new_size=${newLength}, flags=0x${flags.toString(16)} -> 0x${oldAddress.toString(16)} (shrunk in place)`);
+      return;
+    }
+
+    const extensionAddress = oldAddress + oldSize;
+    const extensionSize = newSize - oldSize;
+    if (this.rangeIsFree(extensionAddress, extensionSize)) {
+      if (this.mappedBytesValue + extensionSize > this.policy.maxMappedBytes) {
+        this.failSyscall(ENOMEM);
+        this.recordSyscall(number, 'mremap', `old=0x${oldAddress.toString(16)}, old_size=${oldLength}, new_size=${newLength}, flags=0x${flags.toString(16)} -> -${ENOMEM} (mapping budget)`);
+        return;
+      }
+      this.mapRange(extensionAddress, extensionSize);
+      this.protectRange(extensionAddress, extensionSize, mapping.permissions);
+      mapping.size = newSize;
+      this.setSyscallResult(oldAddress);
+      this.recordSyscall(number, 'mremap', `old=0x${oldAddress.toString(16)}, old_size=${oldLength}, new_size=${newLength}, flags=0x${flags.toString(16)} -> 0x${oldAddress.toString(16)} (grown in place)`);
+      return;
+    }
+
+    if ((flags & MREMAP_MAYMOVE) === 0) {
+      this.failSyscall(ENOMEM);
+      this.recordSyscall(number, 'mremap', `old=0x${oldAddress.toString(16)}, old_size=${oldLength}, new_size=${newLength}, flags=0x${flags.toString(16)} -> -${ENOMEM} (in-place growth blocked)`);
+      return;
+    }
+    if (this.mappedBytesValue + newSize > this.policy.maxMappedBytes) {
+      this.failSyscall(ENOMEM);
+      this.recordSyscall(number, 'mremap', `old=0x${oldAddress.toString(16)}, old_size=${oldLength}, new_size=${newLength}, flags=0x${flags.toString(16)} -> -${ENOMEM} (move would exceed mapping budget)`);
+      return;
+    }
+
+    const copied = this.engine.mem_read(oldAddress, Math.min(oldSize, newSize));
+    const newAddress = this.findFreeMmapRange(newSize);
+    this.mapRange(newAddress, newSize);
+    if (copied.byteLength) this.engine.mem_write(newAddress, copied);
+    this.protectRange(newAddress, newSize, mapping.permissions);
+    this.unmapRange(oldAddress, oldSize);
+    this.anonymousMappings.push({ address: newAddress, size: newSize, permissions: mapping.permissions });
+    this.mmapCursorValue = newAddress + newSize + PAGE_SIZE;
+    this.setSyscallResult(newAddress);
+    this.recordSyscall(number, 'mremap', `old=0x${oldAddress.toString(16)}, old_size=${oldLength}, new_size=${newLength}, flags=0x${flags.toString(16)} -> 0x${newAddress.toString(16)} (moved)`);
   }
 
   private syscallBrk(number: number): void {
@@ -830,7 +966,7 @@ export class UnicornLinuxProcessSession {
     this.recordSyscall(number, 'futex', `op=0x${operation.toString(16)} -> -${ENOSYS}`);
   }
 
-  private virtualSyscall(nextRip: bigint): void {
+  private virtualSyscall(syscallRip: bigint, nextRip: bigint): void {
     if (this.policy.syscallPolicy === 'none') { this.trap('Linux syscalls are disabled by execution policy.'); return; }
     const number = Number(this.engine.reg_read_i64(this.unicorn.X86_REG_RAX));
     this.engine.reg_write_i64(this.unicorn.X86_REG_RCX, nextRip);
@@ -953,6 +1089,7 @@ export class UnicornLinuxProcessSession {
         return;
       }
       if (number === SYS_MMAP) { this.syscallMmap(number); return; }
+      if (number === SYS_MREMAP) { this.syscallMremap(number); return; }
       if (number === SYS_MUNMAP) {
         const address = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RDI), 'munmap address');
         const length = safeNumber(this.engine.reg_read_i64(this.unicorn.X86_REG_RSI), 'munmap length');
@@ -1039,7 +1176,15 @@ export class UnicornLinuxProcessSession {
       if (number === SYS_IOCTL) { this.failSyscall(ENOTTY); return; }
       if (number === SYS_RSEQ) { this.failSyscall(ENOSYS); return; }
 
-      throw new Error(`Linux syscall ${number} is not implemented by the Unicorn Linux userspace contract.`);
+      const args = [
+        ['rdi', this.engine.reg_read_i64(this.unicorn.X86_REG_RDI)],
+        ['rsi', this.engine.reg_read_i64(this.unicorn.X86_REG_RSI)],
+        ['rdx', this.engine.reg_read_i64(this.unicorn.X86_REG_RDX)],
+        ['r10', this.engine.reg_read_i64(this.unicorn.X86_REG_R10)],
+        ['r8', this.engine.reg_read_i64(this.unicorn.X86_REG_R8)],
+        ['r9', this.engine.reg_read_i64(this.unicorn.X86_REG_R9)]
+      ].map(([name, value]) => `${name}=0x${(value as bigint).toString(16)}`).join(', ');
+      throw new Error(`Linux syscall ${number} at RIP 0x${syscallRip.toString(16)} is not implemented by the Unicorn Linux userspace contract (${args}).`);
     } catch (cause) {
       this.trap(cause instanceof Error ? cause.message : String(cause));
     }
