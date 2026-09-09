@@ -209,11 +209,24 @@ try {
   const source = join(temp, 'hello.c');
   const executable = join(temp, 'hello');
   writeFileSync(source, [
+    '#define _GNU_SOURCE',
     '#include <stdio.h>',
+    '#include <sys/mman.h>',
+    '#include <sys/syscall.h>',
     '#include <sys/uio.h>',
+    '#include <unistd.h>',
     'int main(void) {',
     '  static const char left[] = "hello from ";',
     '  static const char right[] = "unicorn writev\\n";',
+    '  unsigned char *page = mmap(NULL, 4096, PROT_READ | PROT_WRITE, MAP_PRIVATE | MAP_ANONYMOUS, -1, 0);',
+    '  if (page == MAP_FAILED) return 3;',
+    '  page[0] = 0x5a;',
+    '  page[4095] = 0xa5;',
+    '  unsigned char *grown = (unsigned char *)syscall(SYS_mremap, page, 4096, 8192, MREMAP_MAYMOVE);',
+    '  if (grown == MAP_FAILED) return 4;',
+    '  if (grown[0] != 0x5a || grown[4095] != 0xa5 || grown[4096] != 0) return 5;',
+    '  grown[4096] = 0x3c;',
+    '  if (munmap(grown, 8192) != 0) return 6;',
     '  struct iovec iov[2] = {',
     '    { (void *)left, sizeof(left) - 1 },',
     '    { (void *)right, sizeof(right) - 1 }',
@@ -296,11 +309,15 @@ try {
     assert.match(snapshot.stdout, /hello from unicorn dynamic glibc/);
     assert.match(snapshot.stdout, /hello from unicorn writev/);
     assert.ok(
+      snapshot.events.some((event) => event.kind === 'syscall' && event.number === 25 && event.name === 'mremap' && /old_size=4096, new_size=8192/.test(event.detail)),
+      'dynamic glibc fixture must exercise the bounded Linux user mremap syscall contract'
+    );
+    assert.ok(
       snapshot.events.some((event) => event.kind === 'syscall' && event.number === 20 && event.name === 'writev'),
       'dynamic glibc fixture must exercise the bounded Linux user writev syscall contract'
     );
     assert.ok(snapshot.events.some((event) => event.kind === 'trace-gap'), 'dynamic startup must cross loader/dependency execution boundaries');
-    console.log(`Unicorn Linux dynamic smoke: PASS (${snapshot.instructionCount.toLocaleString()} instructions, loader + libc + writev through explicit runtime closure)`);
+    console.log(`Unicorn Linux dynamic smoke: PASS (${snapshot.instructionCount.toLocaleString()} instructions, loader + libc + mremap + writev through explicit runtime closure)`);
   } finally {
     session.dispose();
   }
