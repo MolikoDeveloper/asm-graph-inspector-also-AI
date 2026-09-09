@@ -12,6 +12,7 @@ import { useGlobalDependencies } from '../features/dependencies/useGlobalDepende
 import { executionSupportForTarget, useExecutionController } from '../features/execution/useExecutionController';
 import { executionAddressFromSnapshot, findBinaryFunctionForAddress, graphNodeForAddress, imageContainsExecutableAddress, projectExecutionTrace } from '../features/execution/follow';
 import type { ExecutionSupport, ExecutionTarget } from '../features/execution/model';
+import { canResolveExecutionTargetFromFile, resolveBinaryExecutionTarget } from '../features/execution/targetResolution';
 import type { ProjectFile } from '../features/project/model';
 import type { AssemblerBackend } from '../features/toolchain/model';
 import { ensureAssemblyExecutable } from '../features/toolchain/assemblyExecutionArtifact';
@@ -101,6 +102,8 @@ export function App() {
     }
     return executionTarget ? executionSupportForTarget(executionTarget) : null;
   }, [activeAsmBuildable, executionTarget]);
+  const activeExecutionActionable = canResolveExecutionTargetFromFile(activeFile)
+    && activeExecutionSupport?.supported !== false;
   const executionAddress = useMemo(() => executionAddressFromSnapshot(execution.snapshot), [execution.snapshot]);
   const executionTrace = useMemo(() => projectExecutionTrace(activeGraph, execution.snapshot), [activeGraph, execution.snapshot]);
 
@@ -539,10 +542,24 @@ export function App() {
 
   const resolveActiveExecutionTarget = useCallback(async (): Promise<ExecutionTarget | null> => {
     if (activeAsmBuildable) return (await resolveActiveAsmExecutionTarget())?.target ?? null;
-    if (executionTarget) return executionTarget;
+    if (activeFile?.kind === 'binary') {
+      if (!activeBinarySummary) {
+        log(`Preparing ${activeFile.path} for execution: analyzing ELF now; runtime dependencies will be resolved automatically.`, 'muted');
+      }
+      try {
+        return await resolveBinaryExecutionTarget(
+          activeFile,
+          activeBinarySummary,
+          (file) => analyzeBinaryTarget(file, false)
+        );
+      } catch (error: unknown) {
+        log(`Execution preparation failed: ${error instanceof Error ? error.message : String(error)}`, 'error');
+        return null;
+      }
+    }
     log('No executable binary or ASM source is active.', 'error');
     return null;
-  }, [activeAsmBuildable, executionTarget, log, resolveActiveAsmExecutionTarget]);
+  }, [activeAsmBuildable, activeBinarySummary, activeFile, analyzeBinaryTarget, log, resolveActiveAsmExecutionTarget]);
 
   const stepExecution = useCallback(async (origin: RuntimeOutputChannel = 'diagnostics') => {
     setRuntimeOutputChannel(origin);
@@ -638,10 +655,11 @@ export function App() {
     autoStepBusyRef.current = false;
     dispatch({ type: 'open-file', fileId: file.id });
 
-    const summary = binarySummaries.get(file.id);
-    const target: ExecutionTarget = summary
-      ? { kind: 'binary', file, image: summary.image }
-      : await analyzeBinaryTarget(file, false);
+    const target = await resolveBinaryExecutionTarget(
+      file,
+      binarySummaries.get(file.id),
+      (candidate) => analyzeBinaryTarget(candidate, false)
+    );
 
     await nextFrame();
     execution.clear();
@@ -727,7 +745,7 @@ export function App() {
         const valid = analyzeSourceCandidate(file, file.text ?? '', false);
         return { lines: [{ level: valid ? 'success' : 'error', text: valid ? `Analyzed ${file.path}.` : `${file.path} contains syntax problems; the last valid graph was preserved.` }] };
       }
-      return { lines: [{ level: 'info', text: `Opened ${file.path} as external disassembly/objdump evidence. Binary bytes remain authoritative for CFG and execution.` }] };
+      return { lines: [{ level: 'info', text: `Opened ${file.path} as external disassembly/objdump artifact evidence. Binary bytes remain authoritative for CFG and execution.` }] };
     }
 
     return { lines: [{ level: 'error', text: `Unknown inspector command: ${verbRaw}. Type help for the available commands.` }] };
@@ -790,12 +808,12 @@ export function App() {
     {
       label: 'Run',
       items: [
-        { label: 'Run Active Program', shortcut: 'F6', action: () => void runExecution('diagnostics'), disabled: assemblyBusy || activeExecutionSupport?.supported !== true || autoStepping },
-        { label: 'Step Instruction', shortcut: 'F10', action: () => void stepExecution('diagnostics'), disabled: assemblyBusy || activeExecutionSupport?.supported !== true || execution.snapshot.status === 'running' || autoStepping },
-        { label: autoStepping ? 'Stop Auto Step' : 'Auto Step', shortcut: 'F11', action: () => void toggleAutoStepExecution(), disabled: assemblyBusy || activeExecutionSupport?.supported !== true || execution.snapshot.status === 'running' },
+        { label: 'Run Active Program', shortcut: 'F6', action: () => void runExecution('diagnostics'), disabled: assemblyBusy || !activeExecutionActionable || autoStepping },
+        { label: 'Step Instruction', shortcut: 'F10', action: () => void stepExecution('diagnostics'), disabled: assemblyBusy || !activeExecutionActionable || execution.snapshot.status === 'running' || autoStepping },
+        { label: autoStepping ? 'Stop Auto Step' : 'Auto Step', shortcut: 'F11', action: () => void toggleAutoStepExecution(), disabled: assemblyBusy || !activeExecutionActionable || execution.snapshot.status === 'running' },
         { label: 'Pause', action: pauseExecution, disabled: execution.snapshot.status !== 'running' && !autoStepping },
         { separator: true, label: '' },
-        { label: 'Reset Execution', shortcut: 'Shift F5', action: () => void resetExecution(), disabled: assemblyBusy || activeExecutionSupport?.supported !== true },
+        { label: 'Reset Execution', shortcut: 'Shift F5', action: () => void resetExecution(), disabled: assemblyBusy || !activeExecutionActionable },
         ...(execution.preflight.status === 'incompatible' ? [{ label: 'Probe Observed Failure', action: () => void probeExecution(), disabled: assemblyBusy || execution.snapshot.status === 'running' }] : [])
       ]
     },
@@ -807,7 +825,7 @@ export function App() {
       ]
     },
     { label: 'Help', items: [{ label: 'About', action: () => setAboutOpen(true) }] }
-  ], [activeFile, activeAsmBuildable, activeExecutionSupport, assemblyBusy, autoStepping, buildActiveAssembly, execution.preflight.status, execution.snapshot.status, exportCurrentProject, log, openNewFileDialog, pauseExecution, probeExecution, projects, resetExecution, runAnalysis, runExecution, stepExecution, toggleAutoStepExecution, workspace.activeGroupId]);
+  ], [activeExecutionActionable, activeFile, activeAsmBuildable, assemblyBusy, autoStepping, buildActiveAssembly, execution.preflight.status, execution.snapshot.status, exportCurrentProject, log, openNewFileDialog, pauseExecution, probeExecution, projects, resetExecution, runAnalysis, runExecution, stepExecution, toggleAutoStepExecution, workspace.activeGroupId]);
 
   useEffect(() => {
     folderInputRef.current?.setAttribute('webkitdirectory', '');
