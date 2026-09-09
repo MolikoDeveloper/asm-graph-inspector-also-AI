@@ -43,7 +43,7 @@ export function BottomPanel({
     + (executionPreflight.status === 'incompatible' || executionPreflight.status === 'error' ? 1 : 0);
 
   return (
-    <section className="bottom-panel bottom-panel-console">
+    <section className="bottom-panel bottom-panel-console" data-runtime-origin={runtimeOutputChannel}>
       <div className="bottom-tabs">
         <button className={tab === 'terminal' ? 'active' : ''} onClick={() => setTab('terminal')}><TerminalSquare size={14} /> Terminal / Console</button>
         <button className={tab === 'diagnostics' ? 'active' : ''} onClick={() => setTab('diagnostics')}><Bug size={13} /> Diagnostics{diagnosticCount ? <span className="bottom-tab-badge">{diagnosticCount}</span> : null}</button>
@@ -53,7 +53,7 @@ export function BottomPanel({
       <div className={`bottom-panel-page ${tab === 'terminal' ? 'active' : ''}`} aria-hidden={tab !== 'terminal'}>
         <InspectorTerminal
           snapshot={execution}
-          captureRuntimeOutput={runtimeOutputChannel === 'terminal'}
+          captureRuntimeOutput={true}
           onCommand={onTerminalCommand}
         />
       </div>
@@ -65,7 +65,7 @@ export function BottomPanel({
           support={executionSupport}
           targetName={executionTargetName}
           buildEntries={entries}
-          showProcessOutput={runtimeOutputChannel === 'diagnostics'}
+          showProcessOutput={false}
         />
       </div>
 
