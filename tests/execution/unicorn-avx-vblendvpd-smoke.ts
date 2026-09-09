@@ -103,8 +103,8 @@ function runYmm(module: UnicornModule): void {
 function runExactWidthMemory(module: UnicornModule): void {
   const engine = new module.Unicorn(module.ARCH_X86, module.MODE_64);
   const source = SOURCE_PAGE + PAGE - 16;
-  const src2 = [0xaaaa_n, 0xbbbb_n];
-  const src1 = [0x1111_n, 0x2222_n];
+  const src2 = [0xAAAAn, 0xBBBBn];
+  const src1 = [0x1111n, 0x2222n];
   const mask = [SIGN, 0n];
   const code = [
     0xc5, 0xfa, 0x6f, 0x23,             // vmovdqu xmm4, [rbx]
@@ -142,7 +142,7 @@ function runMaskDestinationAlias(module: UnicornModule): void {
   const engine = new module.Unicorn(module.ARCH_X86, module.MODE_64);
   const mask = [SIGN, 0n];
   const src1 = [0x1111n, 0x2222n];
-  const src2 = [0xaaaaan, 0xbbbbn];
+  const src2 = [0xAAAAn, 0xBBBBn];
   const code = [
     0xc5, 0xfa, 0x6f, 0x00,             // vmovdqu xmm0, [rax]
     0xc5, 0xfa, 0x6f, 0x50, 0x10,       // vmovdqu xmm2, [rax+0x10]
