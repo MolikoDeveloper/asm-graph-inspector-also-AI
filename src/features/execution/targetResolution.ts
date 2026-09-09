@@ -1,6 +1,6 @@
 import type { BinaryAnalysisSummary } from '../binary/model';
 import type { ProjectFile } from '../project/model';
-import type { ExecutionTarget } from './model';
+import type { ExecutionStatus, ExecutionTarget } from './model';
 
 export type BinaryExecutionTargetAnalyzer = (file: ProjectFile) => Promise<ExecutionTarget>;
 
@@ -14,6 +14,11 @@ export function canResolveExecutionTargetFromFile(file: ProjectFile | null): boo
   if (!file) return false;
   if (file.kind === 'binary') return file.bytes instanceof ArrayBuffer;
   return file.kind === 'text' && file.language === 'asm';
+}
+
+/** Run continues a paused process, but terminal sessions must be recreated. */
+export function shouldRestartRunFromStatus(status: ExecutionStatus): boolean {
+  return status === 'exited' || status === 'halted' || status === 'trapped';
 }
 
 /**
