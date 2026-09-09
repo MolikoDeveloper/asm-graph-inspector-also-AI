@@ -2,7 +2,8 @@ import type { BinaryAnalysisSummary, LoadedImage } from '../../src/features/bina
 import type { ProjectFile } from '../../src/features/project/model';
 import {
   canResolveExecutionTargetFromFile,
-  resolveBinaryExecutionTarget
+  resolveBinaryExecutionTarget,
+  shouldRestartRunFromStatus
 } from '../../src/features/execution/targetResolution';
 
 function assert(condition: unknown, message: string): asserts condition {
@@ -42,6 +43,11 @@ const image = {
 
 assert(canResolveExecutionTargetFromFile(file), 'binary ELF bytes should enable Run before background analysis completes');
 assert(!canResolveExecutionTargetFromFile(null), 'no active file must not enable execution');
+assert(!shouldRestartRunFromStatus('ready'), 'ready session should run without recreation');
+assert(!shouldRestartRunFromStatus('paused'), 'Run from pause should continue the same process');
+assert(shouldRestartRunFromStatus('exited'), 'Run after exit must recreate the process automatically');
+assert(shouldRestartRunFromStatus('halted'), 'Run after halt must recreate the process automatically');
+assert(shouldRestartRunFromStatus('trapped'), 'Run after trap must recreate the process automatically');
 
 let analyses = 0;
 const analyzed = await resolveBinaryExecutionTarget(file, null, async (candidate) => {
@@ -79,4 +85,4 @@ try {
 }
 assert(rejected, 'non-binary files must remain fail-closed');
 
-console.log('execution target resolution smoke: PASS (Run may analyze a binary on demand; cached summaries remain reusable)');
+console.log('execution target resolution smoke: PASS (Run analyzes on demand, reuses cached summaries, and restarts terminal sessions)');
