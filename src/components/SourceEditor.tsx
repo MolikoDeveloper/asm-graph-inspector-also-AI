@@ -6,6 +6,7 @@ import type { AssemblyProblem } from '../features/analysis/asmParser';
 import { inspectElfHeader } from '../features/binary/elfParser';
 import { loadFullBinaryDisassembly, type BinaryDisassemblyDocument } from '../features/analysis/binaryDisassembly';
 import type { ExecutionSnapshot } from '../features/execution/model';
+import { executionAddressFromSnapshot } from '../features/execution/follow';
 import { blinkDisassemblyLineText, blinkRuntimeCursorLine } from '../features/execution/runtimeDisassembly';
 import { HighlightedAssemblyLine } from './AssemblySyntax';
 
@@ -68,11 +69,19 @@ function BinaryDisassemblyEditor({ file, fontSize, revealTarget, executionSnapsh
   const runtimeScrollRef = useRef<HTMLDivElement>(null);
   const binaryHeader = useMemo(() => inspectElfHeader(file.bytes), [file.bytes]);
   const rowHeight = Math.max(19, Math.round(fontSize * 1.65));
-  const runtimeDisassembly = executionSnapshot.targetFileId === file.id
-    && executionSnapshot.provider === 'blink-process'
-    && executionSnapshot.status === 'paused'
+  const executionActive = executionSnapshot.targetFileId === file.id
+    && (executionSnapshot.status === 'paused' || executionSnapshot.status === 'running');
+  const processRuntimeDisassembly = executionActive
+    && (executionSnapshot.provider === 'blink-process' || executionSnapshot.provider === 'unicorn-linux')
     ? executionSnapshot.runtimeDisassembly
     : null;
+  const executionAddress = executionActive ? executionAddressFromSnapshot(executionSnapshot) : null;
+  // The program image has an authoritative static ELF/Capstone view, so follow
+  // that view directly. Loader/dependency execution has no matching static file
+  // open here and therefore uses the provider-owned runtime disassembly instead.
+  const runtimeDisassembly = processRuntimeDisassembly?.image?.role === 'program'
+    ? null
+    : processRuntimeDisassembly;
   const runtimeImage = runtimeDisassembly?.image ?? null;
   const runtimeCursorLine = runtimeDisassembly
     ? blinkRuntimeCursorLine(runtimeDisassembly.lines, executionSnapshot.registers?.rip, runtimeDisassembly.currentLine)
@@ -109,6 +118,17 @@ function BinaryDisassemblyEditor({ file, fontSize, revealTarget, executionSnapsh
     setScrollTop(targetTop);
     setMode('disassembly');
   }, [document, file.id, revealTarget?.nonce, revealTarget?.address, revealTarget?.fileId, rowHeight]);
+
+  useEffect(() => {
+    if (!document || executionAddress === null || runtimeDisassembly || !scrollRef.current) return;
+    const index = findAddressIndex(document, executionAddress);
+    const line = document.lines[index];
+    if (!line || executionAddress < line.address || executionAddress >= line.endAddress) return;
+    const targetTop = Math.max(0, index * rowHeight - scrollRef.current.clientHeight * 0.32);
+    scrollRef.current.scrollTop = targetTop;
+    setScrollTop(targetTop);
+    setMode('disassembly');
+  }, [document, executionAddress, runtimeDisassembly, rowHeight]);
 
   useEffect(() => {
     if (!runtimeDisassembly || !runtimeScrollRef.current) return;
@@ -156,15 +176,15 @@ function BinaryDisassemblyEditor({ file, fontSize, revealTarget, executionSnapsh
         <div className="runtime-disassembly-surface">
           <div className="runtime-disassembly-meta">
             <strong>Live process</strong>
-            <span>Blink debugger</span>
+            <span>{runtimeDisassembly.source === 'unicorn-runtime' ? 'Unicorn Linux User' : 'Blink debugger'}</span>
             <span>RIP {executionSnapshot.registers ? `0x${executionSnapshot.registers.rip.toString(16)}` : '—'}</span>
-            <span>step {executionSnapshot.instructionCount.toLocaleString()}</span>
+            <span>{executionSnapshot.status} · {executionSnapshot.instructionCount.toLocaleString()} instruction(s)</span>
             {runtimeImage ? <>
               <span title={`runtime ${hexBigInt(runtimeImage.runtimeAddress)}`}>{runtimeImage.role} · {runtimeImage.name}</span>
               <span>image {hexBigInt(runtimeImage.imageAddress)}</span>
               <span>bias {hexBigInt(runtimeImage.loadBias)}</span>
               <small>{runtimeImage.confidence} · {runtimeImage.signatureBytes} signature byte{runtimeImage.signatureBytes === 1 ? '' : 's'}</small>
-            </> : <span title="The current byte signature was not unique across loaded executable images.">image unresolved</span>}
+            </> : <span title="The current runtime instruction could not be projected into a unique loaded image.">image unresolved</span>}
             <small>Runtime identity is observational · static ELF + Capstone analysis remains authoritative.</small>
           </div>
           <div ref={runtimeScrollRef} className="runtime-disassembly-scroll">
@@ -188,6 +208,7 @@ function BinaryDisassemblyEditor({ file, fontSize, revealTarget, executionSnapsh
             <>
               <div className="disassembly-meta">
                 <span>{document.lines.length.toLocaleString()} instructions</span><span>{document.sectionCount} executable sections</span><span>{document.decodedBytes.toLocaleString()} decoded bytes</span>{document.skippedBytes ? <span>{document.skippedBytes.toLocaleString()} undecodable/padding bytes skipped</span> : null}
+                {executionAddress !== null ? <span>▶ execution 0x{executionAddress.toString(16)} · {executionSnapshot.status}</span> : null}
                 <form className="disassembly-address-search" onSubmit={findInstruction}>
                   <Search size={12} aria-hidden="true" />
                   <input
@@ -205,11 +226,13 @@ function BinaryDisassemblyEditor({ file, fontSize, revealTarget, executionSnapsh
                 <div className="disassembly-spacer" style={{ height: document.lines.length * rowHeight }}>
                   <div className="disassembly-window" style={{ transform: `translateY(${start * rowHeight}px)` }}>
                     {visible.map((line) => {
-                      const selected = (revealTarget?.fileId === file.id && revealTarget.address !== undefined && revealTarget.address >= line.address && revealTarget.address < line.endAddress)
+                      const currentExecution = executionAddress !== null && executionAddress >= line.address && executionAddress < line.endAddress;
+                      const selected = currentExecution
+                        || (revealTarget?.fileId === file.id && revealTarget.address !== undefined && revealTarget.address >= line.address && revealTarget.address < line.endAddress)
                         || (searchedAddress !== null && searchedAddress >= line.address && searchedAddress < line.endAddress);
                       return (
                         <div key={line.address} className={selected ? 'disassembly-row selected' : 'disassembly-row'} style={{ height: rowHeight }}>
-                          <code className="disassembly-address">{line.address.toString(16).padStart(16, '0')}</code>
+                          <code className="disassembly-address">{currentExecution ? '▶ ' : '  '}{line.address.toString(16).padStart(16, '0')}</code>
                           <code className="disassembly-bytes">{line.bytes.map((byte) => byte.toString(16).padStart(2, '0')).join(' ')}</code>
                           <code className="disassembly-code"><HighlightedAssemblyLine line={`${line.mnemonic}${line.operands ? ` ${line.operands}` : ''}`} /></code>
                           <span className="disassembly-symbol">{line.symbolName ? `${line.symbolName}:` : ''}</span>
