@@ -66,10 +66,10 @@ def patch_avx_vblendvpd_decoder(source_root: Path) -> None:
             rm = modrm & 7;
             reg = ((modrm >> 3) & 7) | rex_r;
             mod = (modrm >> 6) & 3;
-
             if (b1 >= 2) {
                 goto unknown_op;
             }
+
             sse_fn_eppi = sse_op_table7[b].op[b1];
             if (!sse_fn_eppi) {
                 goto unknown_op;
@@ -82,7 +82,6 @@ def patch_avx_vblendvpd_decoder(source_root: Path) -> None:
             rm = modrm & 7;
             reg = ((modrm >> 3) & 7) | rex_r;
             mod = (modrm >> 6) & 3;
-
             if (vex_map3a_vblendvpd) {
                 int dest_offset;
                 int src1_offset;
@@ -165,10 +164,10 @@ def patch_avx_vblendvpd_decoder(source_root: Path) -> None:
                 gen_op_zero_vex_upper(s, dest_offset, s->vex_l);
                 break;
             }
-
             if (b1 >= 2) {
                 goto unknown_op;
             }
+
             sse_fn_eppi = sse_op_table7[b].op[b1];
             if (!sse_fn_eppi) {
                 goto unknown_op;
