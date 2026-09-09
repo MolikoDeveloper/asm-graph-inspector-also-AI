@@ -24,6 +24,7 @@ import { UnicornLinuxProcessSession } from './unicornLinuxProcessSession';
 import { registerActiveExecutionInputSink } from './activeInput';
 import { registerActiveExecutionProbeSink } from './activeProbe';
 import { appendExecutionStdin } from './stdinQueue';
+import { shouldRestartRunFromStatus } from './targetResolution';
 
 type BrowserExecutionSession = X86ExecutionSession | UnicornMachineSession | UnicornLinuxProcessSession | AsmSourceExecutionSession | BlinkProcessSession;
 
@@ -182,7 +183,11 @@ export function useExecutionController() {
   }, []);
 
   const run = useCallback(async (target: ExecutionTarget) => {
-    const session = await createSession(target, false);
+    const current = sessionRef.current;
+    const forceRestart = !!current
+      && sameTarget(current, target)
+      && shouldRestartRunFromStatus(current.status);
+    const session = await createSession(target, forceRestart);
     if (!session) return;
     await driveRun(session);
   }, [createSession, driveRun]);
